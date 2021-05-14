@@ -1,14 +1,16 @@
 ﻿using System;
+using System.IO;
 using System.Text;
 
-namespace XXHash3.NET.Sandbox
+namespace XXHash3NET.Sandbox
 {
     class Program
     {
         static void Main(string[] args)
         {
-            ulong x = XXHash3.Hash64(Encoding.UTF8.GetBytes("ABCDEF"));
-            string g = $"{x:x16}";
+            byte[] xx = File.ReadAllBytes(@"C:\Users\Crauzer\Desktop\test.xxx");
+
+            XXHash3.Hash64(xx);
         }
     }
 }

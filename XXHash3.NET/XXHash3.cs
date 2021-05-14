@@ -1,11 +1,10 @@
 ﻿using System;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
+#if NETCOREAPP
 using System.Runtime.Intrinsics.X86;
-
-namespace XXHash3.NET
+#endif
+namespace XXHash3NET
 {
     public static class XXHash3
     {
@@ -246,17 +245,12 @@ namespace XXHash3.NET
         {
             for (int i = 0; i < stripeCount; i++)
             {
-                ReadOnlySpan<byte> in_data = data[(i * 64)..];
-
-                fixed (void* in_data_prefetch_ptr = in_data[384..])
-                {
-                    xxh3_accumulate_512_scalar(acc, in_data, secret[(i * 8)..]);
-                }
+                xxh3_accumulate_512_scalar(acc, data[(i * XXH_STRIPE_LEN)..], secret[(i * 8)..]);
             }
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)] private static void xxh3_accumulate_512_scalar(ulong[] acc, ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret)
         {
-            for (int i = 0; i < XXH_STRIPE_LEN; i++)
+            for (int i = 0; i < XXH_ACC_NB; i++)
             {
                 ulong data_val = read_le64(data[(8 * i)..]);
                 ulong data_key = data_val ^ read_le64(secret[(i * 8)..]);
@@ -267,24 +261,24 @@ namespace XXHash3.NET
         }
         private static unsafe void xxh3_accumulate_512_sse2(ulong[] acc, ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret)
         {
-            Span<Vector128<uint>> xacc = MemoryMarshal.Cast<ulong, Vector128<uint>>(acc);
-            ReadOnlySpan<Vector128<uint>> xdata = MemoryMarshal.Cast<byte, Vector128<uint>>(data);
-            ReadOnlySpan<Vector128<uint>> xsecret = MemoryMarshal.Cast<byte, Vector128<uint>>(secret);
-
-            for (int i = 0; i < XXH_STRIPE_LEN / 16; i++)
-            {
-                Vector128<uint> data_vec = xdata[i];
-                Vector128<uint> key_vec = xsecret[i];
-
-                Vector128<uint> data_key = Sse2.Xor(data_vec, key_vec);
-                Vector128<uint> data_key_low = Sse2.Shuffle(data_key, _mm_shuffle(0, 3, 0, 1));
-                Vector128<uint> product = Sse2.Multiply(data_key, data_key_low).AsUInt32();
-
-                Vector128<uint> data_swap = Sse2.Shuffle(data_vec, _mm_shuffle(1, 0, 3, 2));
-                Vector128<uint> sum = Sse2.Add(xacc[i], data_swap);
-
-                xacc[i] = Sse2.Add(product, sum);
-            }
+            //Span<Vector128<uint>> xacc = MemoryMarshal.Cast<ulong, Vector128<uint>>(acc);
+            //ReadOnlySpan<Vector128<uint>> xdata = MemoryMarshal.Cast<byte, Vector128<uint>>(data);
+            //ReadOnlySpan<Vector128<uint>> xsecret = MemoryMarshal.Cast<byte, Vector128<uint>>(secret);
+            //
+            //for (int i = 0; i < XXH_STRIPE_LEN / 16; i++)
+            //{
+            //    Vector128<uint> data_vec = xdata[i];
+            //    Vector128<uint> key_vec = xsecret[i];
+            //
+            //    Vector128<uint> data_key = Sse2.Xor(data_vec, key_vec);
+            //    Vector128<uint> data_key_low = Sse2.Shuffle(data_key, _mm_shuffle(0, 3, 0, 1));
+            //    Vector128<uint> product = Sse2.Multiply(data_key, data_key_low).AsUInt32();
+            //
+            //    Vector128<uint> data_swap = Sse2.Shuffle(data_vec, _mm_shuffle(1, 0, 3, 2));
+            //    Vector128<uint> sum = Sse2.Add(xacc[i], data_swap);
+            //
+            //    xacc[i] = Sse2.Add(product, sum);
+            //}
         }
         private static void xxh3_accumulate_512_avx2(ulong[] acc, ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret)
         {
@@ -320,10 +314,35 @@ namespace XXHash3.NET
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)] private static unsafe ulong xxh3_mul128_fold64(ulong lhs, ulong rhs)
         {
+#if NETCOREAPP
             ulong low;
             ulong high = Bmi2.X64.MultiplyNoFlags(lhs, rhs, &low);
 
             return low ^ high;
+#endif
+
+            return xxh3_mul128_fold64_slow(rhs, lhs);
+        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static unsafe ulong xxh3_mul128_fold64_slow(ulong lhs, ulong rhs)
+        {
+            uint lhsHigh = (uint)(lhs >> 32);
+            uint rhsHigh = (uint)(rhs >> 32);
+            uint lhsLow = (uint)lhs;
+            uint rhsLow = (uint)rhs;
+
+            ulong high = xxh_mul32to64(lhsHigh, rhsHigh);
+            ulong middleOne = xxh_mul32to64(lhsLow, rhsHigh);
+            ulong middleTwo = xxh_mul32to64(lhsHigh, rhsLow);
+            ulong low = xxh_mul32to64(lhsLow, rhsLow);
+
+            ulong t = low + (middleOne << 32);
+            ulong carry1 = t < low ? 1u : 0u;
+
+            low = t + (middleTwo << 32);
+            ulong carry2 = low < t ? 1u : 0u;
+            high = high + (middleOne >> 32) + (middleTwo >> 32) + carry1 + carry2;
+
+            return high + low;
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong xxh_mul32to64(ulong x, ulong y)
         {
