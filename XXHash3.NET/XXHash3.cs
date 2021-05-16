@@ -145,7 +145,7 @@ namespace XXHash3NET
             int round_count = length / 16;
             for (int i = 0; i < 8; i++)
             {
-                acc += xxh3_mix16B(data[(16 * 1)..], secret[(16 * 1)..], seed);
+                acc += xxh3_mix16B(data[(16 * i)..], secret[(16 * i)..], seed);
             }
 
             acc = xxh3_avalanche(acc);
