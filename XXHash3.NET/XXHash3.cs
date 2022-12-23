@@ -319,9 +319,9 @@ namespace XXHash3NET
             ulong high = Bmi2.X64.MultiplyNoFlags(lhs, rhs, &low);
 
             return low ^ high;
-#endif
-
+#else
             return xxh3_mul128_fold64_slow(rhs, lhs);
+#endif
         }
         [MethodImpl(MethodImplOptions.AggressiveInlining)] private static unsafe ulong xxh3_mul128_fold64_slow(ulong lhs, ulong rhs)
         {
