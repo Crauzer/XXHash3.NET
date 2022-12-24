@@ -416,8 +416,8 @@ namespace XXHash3NET
             int secretLimit
         )
         {
-            Guard.IsLessThanOrEqualTo(stripeCount, stripeCountPerBlock, nameof(stripeCount));
-            Guard.IsLessThan(currentStripeCount, stripeCountPerBlock, nameof(currentStripeCount));
+            Debug.Assert(stripeCount <= stripeCountPerBlock);
+            Debug.Assert(currentStripeCount < stripeCountPerBlock);
 
             if (stripeCountPerBlock - currentStripeCount <= stripeCount)
             {
