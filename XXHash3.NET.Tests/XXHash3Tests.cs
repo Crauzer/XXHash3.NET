@@ -7,7 +7,7 @@ namespace XXHash3NET.Tests
         [InlineData(128, "0xb20d3315510bf903")]
         [InlineData(240, "0xc7a48cec6028806a")]
         [InlineData(512, "0x1543947f97a0d455")]
-        public void Should_Return_Correct_Checksum_For_Stream_Filled_With_0x10_Of_Size(
+        public void Should_Return_Correct_Checksum64_For_Stream_Filled_With_0x10_Of_Size(
             int size,
             string expectedChecksum
         )
@@ -32,7 +32,7 @@ namespace XXHash3NET.Tests
         [InlineData(128, "0xb20d3315510bf903")]
         [InlineData(240, "0xc7a48cec6028806a")]
         [InlineData(512, "0x1543947f97a0d455")]
-        public void Should_Return_Correct_Hash_For_Input_Filled_With_0x10_Of_Size(
+        public void Should_Return_Correct_Hash64_For_Input_Filled_With_0x10_Of_Size(
             int size,
             string expectedHash
         )
