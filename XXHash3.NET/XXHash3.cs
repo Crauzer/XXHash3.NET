@@ -645,7 +645,7 @@ namespace XXHash3NET
             }
             else
             {
-                Span<byte> lastStripe = stackalloc byte[XXHash.XXH_STRIPE_LEN];
+                Span<byte> lastStripe = new byte[XXHash.XXH_STRIPE_LEN];
                 int catchupSize = XXHash.XXH_STRIPE_LEN - this._bufferedSize;
 
                 Debug.Assert(this._bufferedSize > 0);
