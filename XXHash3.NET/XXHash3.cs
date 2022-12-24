@@ -193,25 +193,49 @@ namespace XXHash3NET
         }
         #endregion
 
-        #region Stream Public API
+        #region Immediate Stream Public API
+        /// <summary>
+        /// Computes a checksum using the default seed and secret
+        /// by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
         public static ulong Hash64(Stream stream)
         {
             using XXHash3 state = Create();
             return state.HashData64(stream);
         }
 
+        /// <summary>
+        /// Computes a checksum using the provided seed and the default secret
+        /// by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
+        /// <param name="seed">The seed to use</param>
         public static ulong Hash64(Stream stream, ulong seed)
         {
             using XXHash3 state = Create(seed);
             return state.HashData64(stream);
         }
 
+        /// <summary>
+        /// Computes a checksum using the default seed and the provided secret
+        /// by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
+        /// <param name="secret">The secret to use</param>
         public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret)
         {
             using XXHash3 state = Create(secret);
             return state.HashData64(stream);
         }
 
+        /// <summary>
+        /// Computes a checksum using the provided seed and secret
+        /// by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
+        /// <param name="secret">The secret to use</param>
+        /// <param name="seed">The seed to use</param>
         public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret, ulong seed)
         {
             using XXHash3 state = Create(seed, secret);
