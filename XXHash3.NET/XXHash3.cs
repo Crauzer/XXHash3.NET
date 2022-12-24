@@ -119,30 +119,6 @@ namespace XXHash3NET
 
             return Digest();
         }
-
-        private ulong Digest()
-        {
-            ReadOnlySpan<byte> secret = this._externalSecret is null
-                ? this._customSecret
-                : this._externalSecret;
-            if (this._totalLength > XXH3_MIDSIZE_MAX)
-            {
-                Span<ulong> accumulator = stackalloc ulong[XXH_ACC_NB];
-
-                DigestLong(accumulator, secret);
-                return xxh3_merge_accs(
-                    accumulator,
-                    secret[XXH_SECRET_MERGEACCS_START..],
-                    (ulong)this._totalLength * XXHash.XXH_PRIME64_1
-                );
-            }
-
-            return this._useSeed switch
-            {
-                true => Hash64(this._buffer, this._seed),
-                false => Hash64(this._buffer, secret)
-            };
-        }
         #endregion
 
         #region Public Immediate API
@@ -611,6 +587,30 @@ namespace XXHash3NET
 
             data[dataOffset..].CopyTo(this._buffer);
             this._bufferedSize = data.Length - dataOffset;
+        }
+
+        private ulong Digest()
+        {
+            ReadOnlySpan<byte> secret = this._externalSecret is null
+                ? this._customSecret
+                : this._externalSecret;
+            if (this._totalLength > XXH3_MIDSIZE_MAX)
+            {
+                Span<ulong> accumulator = stackalloc ulong[XXH_ACC_NB];
+
+                DigestLong(accumulator, secret);
+                return xxh3_merge_accs(
+                    accumulator,
+                    secret[XXH_SECRET_MERGEACCS_START..],
+                    (ulong)this._totalLength * XXHash.XXH_PRIME64_1
+                );
+            }
+
+            return this._useSeed switch
+            {
+                true => Hash64(this._buffer, this._seed),
+                false => Hash64(this._buffer, secret)
+            };
         }
 
         //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5602
