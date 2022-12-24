@@ -456,6 +456,12 @@ namespace XXHash3NET
         //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5478
         private void Update(ReadOnlySpan<byte> data)
         {
+            // If input is empty, return early
+            if(data.IsEmpty)
+            {
+                return;
+            }
+
             ReadOnlySpan<byte> secret = this._externalSecret is null
                 ? this._customSecret
                 : this._externalSecret;
