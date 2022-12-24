@@ -7,11 +7,43 @@ namespace XXHash3NET.Sandbox
 {
     class Program
     {
-        private static readonly (string file, string checksum) TESTSTREAM_XXH = ("teststream.xxh", "0x5841c4fe86cbde7e");
+        private static readonly (string file, string checksum) TESTSTREAM_LONG_XXH = ("teststream_long.xxh", "0x5841c4fe86cbde7e");
+        private static readonly (string file, string checksum) TESTSTREAM_16_XXH = ("teststream_16.xxh", "0x92e37d5dd1908b55");
+        private static readonly (string file, string checksum) TESTSTREAM_128_XXH = ("teststream_128.xxh", "0xb20d3315510bf903");
+        private static readonly (string file, string checksum) TESTSTREAM_240_XXH = ("teststream_240.xxh", "0xc7a48cec6028806a");
 
         static void Main(string[] args)
         {
-            XXH3FileDigest(TESTSTREAM_XXH.file, TESTSTREAM_XXH.checksum);
+            CreateTestingFiles();
+            XXH3FileDigest(TESTSTREAM_LONG_XXH.file, TESTSTREAM_LONG_XXH.checksum);
+            XXH3FileDigest(TESTSTREAM_16_XXH.file, TESTSTREAM_16_XXH.checksum);
+            XXH3FileDigest(TESTSTREAM_128_XXH.file, TESTSTREAM_128_XXH.checksum);
+            XXH3FileDigest(TESTSTREAM_240_XXH.file, TESTSTREAM_240_XXH.checksum);
+        }
+
+        static void CreateTestingFiles()
+        {
+            byte[] test16 = new byte[16];
+            for (int i = 0; i < test16.Length; i++)
+            {
+                test16[i] = 0x10;
+            }
+
+            byte[] test128 = new byte[128];
+            for(int i = 0; i < test128.Length; i++)
+            {
+                test128[i] = 0x10;
+            }
+
+            byte[] test240 = new byte[240];
+            for (int i = 0; i < test240.Length; i++)
+            {
+                test240[i] = 0x10;
+            }
+
+            File.WriteAllBytes("teststream_16.xxh", test16);
+            File.WriteAllBytes("teststream_128.xxh", test128);
+            File.WriteAllBytes("teststream_240.xxh", test240);
         }
 
         static void XXH3FileDigest(string file, string originalChecksum)
