@@ -32,7 +32,7 @@ namespace XXHash3NET
         private int _stripeCountPerBlock;
         private int _secretLimit;
         private ulong _seed;
-        private readonly ulong _reserved64;
+        private ulong _reserved64;
         private byte[] _externalSecret;
 
         private const int STREAM_BUFFER_SIZE = 64 * 1024;
@@ -380,6 +380,16 @@ namespace XXHash3NET
         #region XXHash3 Internal Streaming routines
         private void Reset(ulong seed, ReadOnlySpan<byte> secret)
         {
+            this._bufferedSize = 0;
+            this._useSeed = false;
+            this._currentStripeCount = 0;
+            this._totalLength = 0;
+            this._stripeCountPerBlock = 0;
+            this._secretLimit = 0;
+            this._seed = 0;
+            this._reserved64 = 0;
+            this._externalSecret = null;
+
             this._accumulator = new ulong[8]
             {
                 XXHash.XXH_PRIME32_3,
