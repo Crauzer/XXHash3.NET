@@ -601,6 +601,7 @@ namespace XXHash3NET
             if (this._totalLength > XXH3_MIDSIZE_MAX)
             {
                 Span<ulong> accumulator = stackalloc ulong[XXH_ACC_NB];
+                accumulator.Clear();
 
                 DigestLong(accumulator, secret);
                 return xxh3_merge_accs(
@@ -645,7 +646,9 @@ namespace XXHash3NET
             }
             else
             {
-                Span<byte> lastStripe = new byte[XXHash.XXH_STRIPE_LEN];
+                Span<byte> lastStripe = stackalloc byte[XXHash.XXH_STRIPE_LEN];
+                lastStripe.Clear();
+
                 int catchupSize = XXHash.XXH_STRIPE_LEN - this._bufferedSize;
 
                 Debug.Assert(this._bufferedSize > 0);
