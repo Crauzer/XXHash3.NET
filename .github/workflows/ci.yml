@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - release/[0-9].[0-9].[0-9]
+      - dev
+  pull_request:
+    branches:
+      - main
+      - release/[0-9].[0-9].[0-9]
+      - dev
+
+jobs:
+  build:
+    env:
+      BUILD_CONFIG: "Release"
+      XXHASH3_NET_PROJECT: "XXHash3.NET"
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Setup .NET Core
+        uses: actions/setup-dotnet@v3.0.3
+        with:
+          dotnet-version: 6.x
+
+      - name: Install dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build $XXHASH3_NET_PROJECT --configuration $BUILD_CONFIG --no-restore
+
+      #- name: Run Tests
+      #  run: dotnet test $XXHASH3_NET_PROJECT.Tests --configuration $BUILD_CONFIG --no-restore --verbosity normal
