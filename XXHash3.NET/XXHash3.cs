@@ -35,7 +35,7 @@ namespace XXHash3NET
         private readonly ulong _reserved64;
         private byte[] _externalSecret;
 
-        private const int STREAM_BUFFER_SIZE = 8192;
+        private const int STREAM_BUFFER_SIZE = 64 * 1024;
         private byte[] _streamBuffer;
 
         private bool _isDisposed;
@@ -483,7 +483,7 @@ namespace XXHash3NET
             // small input
             if (this._bufferedSize + data.Length <= XXH3_INTERNALBUFFER_SIZE)
             {
-                data.CopyTo(this._buffer.AsSpan()[this._bufferedSize..]);
+                data.CopyTo(this._buffer.AsSpan(this._bufferedSize));
                 this._bufferedSize += data.Length;
                 return;
             }
@@ -494,7 +494,7 @@ namespace XXHash3NET
             {
                 int loadSize = XXH3_INTERNALBUFFER_SIZE - this._bufferedSize;
 
-                data[..loadSize].CopyTo(this._buffer.AsSpan()[this._bufferedSize..]);
+                data[dataOffset..(dataOffset + loadSize)].CopyTo(this._buffer.AsSpan(this._bufferedSize));
                 dataOffset += loadSize;
 
                 ConsumeStripes(
