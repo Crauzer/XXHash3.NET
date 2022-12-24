@@ -2,6 +2,7 @@
 using System;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 #if NETCOREAPP
@@ -833,15 +834,27 @@ namespace XXHash3NET
         {
             for (int i = 0; i < XXH_ACC_NB; i++)
             {
-                ulong key64 = XXHash.Read64Le(secret[(8 * i)..]);
-                ulong acc64 = accumulator[i];
-
-                acc64 = xxh_xorshift64(acc64, 47);
-                acc64 ^= key64;
-                acc64 *= XXHash.XXH_PRIME32_1;
-
-                accumulator[i] = acc64;
+                xxh3_scramble_acc_scalar_round(accumulator, secret, i);
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static void xxh3_scramble_acc_scalar_round(
+            Span<ulong> accumulator,
+            ReadOnlySpan<byte> secret,
+            int lane
+        )
+        {
+            Debug.Assert(lane < XXH_ACC_NB);
+
+            ulong key64 = XXHash.Read64Le(secret[(8 * lane)..]);
+            ulong acc64 = accumulator[lane];
+
+            acc64 = xxh_xorshift64(acc64, 47);
+            acc64 ^= key64;
+            acc64 *= XXHash.XXH_PRIME32_1;
+
+            accumulator[lane] = acc64;
         }
 
         // TODO
