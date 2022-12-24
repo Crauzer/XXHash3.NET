@@ -117,7 +117,7 @@ namespace XXHash3NET
                 Update(this._streamBuffer.AsSpan()[..bytesRead]);
             }
 
-            return Digest();
+            return Digest64();
         }
         #endregion
 
@@ -349,7 +349,11 @@ namespace XXHash3NET
                 secret[(secret.Length - XXHash.XXH_STRIPE_LEN - 7)..]
             );
 
-            return xxh3_merge_accs(acc, secret[11..], (ulong)data.Length * XXHash.XXH_PRIME64_1);
+            return xxh3_merge_accs(
+                acc,
+                secret[XXH_SECRET_MERGEACCS_START..],
+                (ulong)data.Length * XXHash.XXH_PRIME64_1
+            );
         }
         #endregion
 
@@ -589,7 +593,7 @@ namespace XXHash3NET
             this._bufferedSize = data.Length - dataOffset;
         }
 
-        private ulong Digest()
+        private ulong Digest64()
         {
             ReadOnlySpan<byte> secret = this._externalSecret is null
                 ? this._customSecret
