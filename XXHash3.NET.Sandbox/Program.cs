@@ -8,9 +8,15 @@ namespace XXHash3NET.Sandbox
     {
         static void Main(string[] args)
         {
-            byte[] xx = File.ReadAllBytes(@"C:\Users\Crauzer\Desktop\test.xxx");
+            XXH3FileDigest("teststream.xxh");
+        }
 
-            XXHash3.Hash64(xx);
+        static void XXH3FileDigest(string file)
+        {
+            using FileStream stream = File.OpenRead(file);
+
+            ulong digest = XXHash3.Hash64(stream);
+            
         }
     }
 }

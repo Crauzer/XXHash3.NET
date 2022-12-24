@@ -1,421 +1,15 @@
 ﻿using CommunityToolkit.Diagnostics;
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
+using System.IO;
 using System.Runtime.CompilerServices;
 #if NETCOREAPP
 using System.Runtime.Intrinsics.X86;
 #endif
 namespace XXHash3NET
 {
-    //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5281
-    //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L1205
-    public sealed class XXHash3State
-    {
-        private const int XXH3_INTERNALBUFFER_SIZE = 256;
-
-        private ulong[] _accumulator = new ulong[8];
-        private byte[] _customSecret = new byte[XXHash3.XXH3_SECRET.Length];
-        private byte[] _buffer = new byte[XXH3_INTERNALBUFFER_SIZE];
-
-        private int _bufferedSize;
-        private bool _useSeed;
-        private int _currentStripeCount;
-        private long _totalLength;
-        private int _stripeCountPerBlock;
-        private int _secretLimit;
-        private ulong _seed;
-        private ulong _reserved64;
-        private byte[] _externalSecret;
-
-        public XXHash3State()
-        {
-            Reset(0, XXHash3.XXH3_SECRET);
-        }
-
-        public XXHash3State(ulong seed)
-        {
-            if (seed == 0)
-            {
-                Reset(0, XXHash3.XXH3_SECRET);
-                return;
-            }
-
-            if (seed != this._seed || this._externalSecret is not null)
-            {
-                InitializeCustomSecretScalar(this._customSecret, seed);
-            }
-            Reset(seed, XXHash3.XXH3_SECRET);
-        }
-
-        public XXHash3State(ReadOnlySpan<byte> secret)
-        {
-            Guard.IsLessThanOrEqualTo(
-                secret.Length,
-                XXHash3.XXH3_SECRET.Length,
-                nameof(secret.Length)
-            );
-
-            Reset(0, secret);
-        }
-
-        public XXHash3State(ulong seed, ReadOnlySpan<byte> secret)
-        {
-            Guard.IsLessThanOrEqualTo(
-                secret.Length,
-                XXHash3.XXH3_SECRET.Length,
-                nameof(secret.Length)
-            );
-
-            Reset(seed, secret);
-
-            // seed can be 0
-            this._useSeed = true;
-        }
-
-        private void Reset(ulong seed, ReadOnlySpan<byte> secret)
-        {
-            this._accumulator = new ulong[8]
-            {
-                XXHash.XXH_PRIME32_3,
-                XXHash.XXH_PRIME64_1,
-                XXHash.XXH_PRIME64_2,
-                XXHash.XXH_PRIME64_3,
-                XXHash.XXH_PRIME64_4,
-                XXHash.XXH_PRIME32_2,
-                XXHash.XXH_PRIME64_5,
-                XXHash.XXH_PRIME32_1
-            };
-
-            this._seed = seed;
-            this._useSeed = seed != 0;
-
-            this._externalSecret = new byte[secret.Length];
-            secret.CopyTo(this._externalSecret);
-            this._secretLimit = secret.Length - XXHash.XXH_STRIPE_LEN;
-            this._stripeCountPerBlock = this._secretLimit / XXHash.XXH_SECRET_CONSUME_RATE;
-        }
-
-        private static void InitializeCustomSecretScalar(Span<byte> customSecret, ulong seed)
-        {
-            for (int i = 0; i < XXHash3.XXH3_SECRET.Length / 16; i++)
-            {
-                ulong low = XXHash.Read64Le(customSecret[(i * 16)..]) + seed;
-                ulong high = XXHash.Read64Le(customSecret[(i * 16 + 8)..]) - seed;
-
-                XXHash.Write64Le(customSecret[(i * 16)..], low);
-                XXHash.Write64Le(customSecret[(i * 16 + 8)..], high);
-            }
-        }
-
-        // https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5446
-        internal static void ConsumeStripes(
-            Span<ulong> accumulator,
-            ref int currentStripeCount,
-            int stripeCountPerBlock,
-            ReadOnlySpan<byte> input,
-            int stripeCount,
-            ReadOnlySpan<byte> secret,
-            int secretLimit
-        )
-        {
-            Guard.IsLessThanOrEqualTo(stripeCount, stripeCountPerBlock, nameof(stripeCount));
-            Guard.IsLessThan(currentStripeCount, stripeCountPerBlock, nameof(currentStripeCount));
-
-            if (stripeCountPerBlock - currentStripeCount <= stripeCount)
-            {
-                int stripeCountUntilEndOfBlock = stripeCountPerBlock - currentStripeCount;
-                int stripeCountAfterBlock = stripeCount - stripeCountUntilEndOfBlock;
-
-                XXHash3.xxh3_accumulate(
-                    accumulator,
-                    input,
-                    secret[(currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
-                    stripeCountUntilEndOfBlock
-                );
-                XXHash3.xxh3_scramble_acc(accumulator, secret[secretLimit..]);
-                XXHash3.xxh3_accumulate(
-                    accumulator,
-                    input[(stripeCountUntilEndOfBlock * XXHash.XXH_STRIPE_LEN)..],
-                    secret,
-                    stripeCountAfterBlock
-                );
-
-                currentStripeCount = stripeCountAfterBlock;
-            }
-            else
-            {
-                XXHash3.xxh3_accumulate(
-                    accumulator,
-                    input,
-                    secret[(currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
-                    stripeCount
-                );
-
-                currentStripeCount += stripeCount;
-            }
-        }
-
-        public void Update(ReadOnlySpan<byte> data)
-        {
-            UpdateInternal(data);
-        }
-
-        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5478
-        internal void UpdateInternal(ReadOnlySpan<byte> data)
-        {
-            ReadOnlySpan<byte> secret = this._externalSecret is null
-                ? this._customSecret
-                : this._externalSecret;
-
-            this._totalLength += data.Length;
-
-            if (this._bufferedSize > XXH3_INTERNALBUFFER_SIZE)
-            {
-                ThrowHelper.ThrowInvalidOperationException(
-                    $"{nameof(this._bufferedSize)} > {nameof(XXH3_INTERNALBUFFER_SIZE)}"
-                );
-            }
-
-            // small input
-            if (this._bufferedSize + data.Length <= XXH3_INTERNALBUFFER_SIZE)
-            {
-                data.CopyTo(this._buffer.AsSpan()[this._bufferedSize..]);
-                this._bufferedSize += data.Length;
-                return;
-            }
-
-            int internalBufferStripeCount = XXH3_INTERNALBUFFER_SIZE / XXHash.XXH_STRIPE_LEN;
-            int dataOffset = 0;
-            if (this._bufferedSize != 0)
-            {
-                int loadSize = XXH3_INTERNALBUFFER_SIZE - this._bufferedSize;
-
-                data[..loadSize].CopyTo(this._buffer.AsSpan()[this._bufferedSize..]);
-                dataOffset += loadSize;
-
-                ConsumeStripes(
-                    this._accumulator,
-                    ref this._currentStripeCount,
-                    this._stripeCountPerBlock,
-                    this._buffer,
-                    internalBufferStripeCount,
-                    secret,
-                    this._secretLimit
-                );
-
-                this._bufferedSize = 0;
-            }
-
-            if (dataOffset >= data.Length)
-            {
-                ThrowHelper.ThrowInvalidOperationException(
-                    $"{nameof(dataOffset)} >= {nameof(data.Length)}"
-                );
-            }
-
-            // large input
-            if (data.Length - dataOffset > this._stripeCountPerBlock * XXHash.XXH_STRIPE_LEN)
-            {
-                int stripeCount = (data.Length - 1 - dataOffset) / XXHash.XXH_STRIPE_LEN;
-                if (this._stripeCountPerBlock < this._currentStripeCount)
-                {
-                    ThrowHelper.ThrowInvalidOperationException(
-                        $"{nameof(this._stripeCountPerBlock)} < {nameof(this._currentStripeCount)}"
-                    );
-                }
-
-                // join to current block's end
-                {
-                    int stripeCountUntilEnd = this._stripeCountPerBlock - this._currentStripeCount;
-                    if (stripeCountUntilEnd > stripeCount)
-                    {
-                        ThrowHelper.ThrowInvalidOperationException(
-                            $"{nameof(stripeCountUntilEnd)} > {nameof(stripeCount)}"
-                        );
-                    }
-
-                    XXHash3.xxh3_accumulate(
-                        this._accumulator,
-                        data[dataOffset..],
-                        secret[(this._currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
-                        stripeCountUntilEnd
-                    );
-                    XXHash3.xxh3_scramble_acc(this._accumulator, secret[this._secretLimit..]);
-
-                    this._currentStripeCount = 0;
-                    dataOffset += stripeCountUntilEnd * XXHash.XXH_STRIPE_LEN;
-                    stripeCount -= stripeCountUntilEnd;
-                }
-
-                // consume per entire blocks
-                while (stripeCount >= this._stripeCountPerBlock)
-                {
-                    XXHash3.xxh3_accumulate(
-                        this._accumulator,
-                        data[dataOffset..],
-                        secret,
-                        this._stripeCountPerBlock
-                    );
-                    XXHash3.xxh3_scramble_acc(this._accumulator, secret[this._secretLimit..]);
-
-                    dataOffset += this._stripeCountPerBlock * XXHash.XXH_STRIPE_LEN;
-                    stripeCount -= this._stripeCountPerBlock;
-                }
-
-                // consume last partial block
-                {
-                    XXHash3.xxh3_accumulate(
-                        this._accumulator,
-                        data[dataOffset..],
-                        secret,
-                        stripeCount
-                    );
-
-                    dataOffset += stripeCount * XXHash.XXH_STRIPE_LEN;
-                    if (dataOffset >= data.Length)
-                    {
-                        ThrowHelper.ThrowInvalidOperationException(
-                            $"{nameof(dataOffset)} >= {nameof(data.Length)}"
-                        );
-                    }
-
-                    this._currentStripeCount = stripeCount;
-
-                    data.Slice(dataOffset - XXHash.XXH_STRIPE_LEN, XXHash.XXH_STRIPE_LEN)
-                        .CopyTo(this._buffer.AsSpan()[^XXHash.XXH_STRIPE_LEN..]);
-
-                    if (data.Length - dataOffset > XXHash.XXH_STRIPE_LEN)
-                    {
-                        ThrowHelper.ThrowInvalidOperationException(
-                            $"{nameof(data.Length)} - {nameof(dataOffset)} > {nameof(XXHash.XXH_STRIPE_LEN)}"
-                        );
-                    }
-                }
-            }
-            else
-            {
-                // content to consume <= block size
-                // Consume input by a multiple of internal buffer size
-                if (data.Length - dataOffset > XXH3_INTERNALBUFFER_SIZE)
-                {
-                    int limit = data.Length - XXH3_INTERNALBUFFER_SIZE;
-                    do
-                    {
-                        ConsumeStripes(
-                            this._accumulator,
-                            ref this._currentStripeCount,
-                            this._stripeCountPerBlock,
-                            data[dataOffset..],
-                            internalBufferStripeCount,
-                            secret,
-                            this._secretLimit
-                        );
-
-                        dataOffset += XXH3_INTERNALBUFFER_SIZE;
-                    } while (dataOffset < limit);
-
-                    data.Slice(dataOffset - XXHash.XXH_STRIPE_LEN, XXHash.XXH_STRIPE_LEN)
-                        .CopyTo(this._buffer.AsSpan()[^XXHash.XXH_STRIPE_LEN..]);
-                }
-            }
-
-            if (dataOffset >= data.Length)
-            {
-                ThrowHelper.ThrowInvalidOperationException(
-                    $"{nameof(dataOffset)} >= {nameof(data.Length)}"
-                );
-            }
-            if (data.Length - dataOffset > XXHash.XXH_STRIPE_LEN)
-            {
-                ThrowHelper.ThrowInvalidOperationException(
-                    $"{nameof(data.Length)} - {nameof(dataOffset)} > {nameof(XXHash.XXH_STRIPE_LEN)}"
-                );
-            }
-            if (this._bufferedSize != 0)
-            {
-                ThrowHelper.ThrowInvalidOperationException($"{nameof(this._bufferedSize)} != 0");
-            }
-
-            data[dataOffset..].CopyTo(this._buffer);
-            this._bufferedSize = data.Length - dataOffset;
-        }
-
-        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5636
-        public ulong Digest()
-        {
-            ReadOnlySpan<byte> secret = this._externalSecret is null
-                ? this._customSecret
-                : this._externalSecret;
-            if (this._totalLength > XXHash3.XXH3_MIDSIZE_MAX)
-            {
-                Span<ulong> accumulator = stackalloc ulong[XXHash3.XXH_ACC_NB];
-
-                DigestLong(accumulator, secret);
-                return XXHash3.xxh3_merge_accs(
-                    accumulator,
-                    secret[XXHash3.XXH_SECRET_MERGEACCS_START..],
-                    (ulong)this._totalLength * XXHash.XXH_PRIME64_1
-                );
-            }
-
-            return this._useSeed switch
-            {
-                true => XXHash3.Hash64(this._buffer, this._seed),
-                false => XXHash3.Hash64(this._buffer, secret)
-            };
-        }
-
-        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5602
-        private void DigestLong(Span<ulong> accumulator, ReadOnlySpan<byte> secret)
-        {
-            this._accumulator.CopyTo(accumulator);
-
-            if (this._bufferedSize >= XXHash.XXH_STRIPE_LEN)
-            {
-                int stripeCount = (this._bufferedSize - 1) / XXHash.XXH_STRIPE_LEN;
-                int currentStripeCount = this._currentStripeCount;
-
-                ConsumeStripes(
-                    accumulator,
-                    ref currentStripeCount,
-                    this._stripeCountPerBlock,
-                    this._buffer,
-                    stripeCount,
-                    secret,
-                    this._secretLimit
-                );
-
-                XXHash3.xxh3_accumulate_512(
-                    accumulator,
-                    this._buffer.AsSpan()[(this._bufferedSize - XXHash.XXH_STRIPE_LEN)..],
-                    secret[(this._secretLimit - XXHash3.XXH_SECRET_LASTACC_START)..]
-                );
-            }
-            else
-            {
-                Span<byte> lastStripe = stackalloc byte[XXHash.XXH_STRIPE_LEN];
-                int catchupSize = XXHash.XXH_STRIPE_LEN - this._bufferedSize;
-
-                if (this._bufferedSize <= 0)
-                {
-                    ThrowHelper.ThrowInvalidOperationException(
-                        $"{nameof(this._bufferedSize)} <= 0"
-                    );
-                }
-
-                this._buffer.AsSpan()[^catchupSize..].CopyTo(lastStripe);
-                this._buffer.AsSpan()[..this._bufferedSize].CopyTo(lastStripe[catchupSize..]);
-
-                XXHash3.xxh3_accumulate_512(
-                    accumulator,
-                    lastStripe,
-                    secret[(this._secretLimit - XXHash3.XXH_SECRET_LASTACC_START)..]
-                );
-            }
-        }
-    }
-
-    public static class XXHash3
+    public sealed class XXHash3
     {
         internal const int XXH_ACC_NB = (XXHash.XXH_STRIPE_LEN / sizeof(ulong));
         internal const int XXH3_MIDSIZE_MAX = 240;
@@ -423,6 +17,21 @@ namespace XXHash3NET
         internal const int XXH_SECRET_LASTACC_START = 7;
         internal const int XXH_SECRET_DEFAULT_SIZE = 192;
         internal const int XXH3_SECRET_SIZE_MIN = 136;
+        internal const int XXH3_INTERNALBUFFER_SIZE = 256;
+
+        private ulong[] _accumulator = new ulong[8];
+        private byte[] _customSecret = new byte[XXH3_SECRET.Length];
+        private byte[] _buffer = new byte[XXH3_INTERNALBUFFER_SIZE];
+
+        private int _bufferedSize;
+        internal bool UseSeed;
+        private int _currentStripeCount;
+        private long _totalLength;
+        private int _stripeCountPerBlock;
+        private int _secretLimit;
+        private ulong _seed;
+        private readonly ulong _reserved64;
+        private byte[] _externalSecret;
 
         // csharpier-ignore
         internal static readonly byte[] XXH3_SECRET = new byte[192]
@@ -441,9 +50,111 @@ namespace XXHash3NET
             0x45, 0xcb, 0x3a, 0x8f, 0x95, 0x16, 0x04, 0x28, 0xaf, 0xd7, 0xfb, 0xca, 0xbb, 0x4b, 0x40, 0x7e,
         };
 
-        // --------------------------------------- PUBLIC API --------------------------------------- //
-        #region Public API
-        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5253
+        // ---------------------------------- PUBLIC STREAMING API ---------------------------------- //
+        #region Public Streaming API
+        public static XXHash3 Create()
+        {
+            XXHash3 state = new();
+            state.Reset(0, XXH3_SECRET);
+            return state;
+        }
+
+        public static XXHash3 Create(ulong seed)
+        {
+            XXHash3 state = new();
+
+            if (seed == 0)
+            {
+                state.Reset(0, XXH3_SECRET);
+                return state;
+            }
+
+            if (seed != state._seed || state._externalSecret is not null)
+            {
+                state.InitializeCustomSecretScalar(seed);
+            }
+            state.Reset(seed, XXH3_SECRET);
+
+            return state;
+        }
+
+        public static XXHash3 Create(ReadOnlySpan<byte> secret)
+        {
+            Guard.IsLessThanOrEqualTo(
+                secret.Length,
+                XXH3_SECRET.Length,
+                nameof(secret.Length)
+            );
+
+            XXHash3 state = new();
+            state.Reset(0, secret);
+            return state;
+        }
+
+        public static XXHash3 Create(ulong seed, ReadOnlySpan<byte> secret)
+        {
+            Guard.IsLessThanOrEqualTo(
+                secret.Length,
+                XXH3_SECRET.Length,
+                nameof(secret.Length)
+            );
+
+            XXHash3 state = new();
+            state.Reset(seed, secret);
+            // seed can be 0
+            state.UseSeed = true;
+
+            return state;
+        }
+
+        public ulong Hash64(Stream stream, int bufferSize = 8192)
+        {
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
+
+            int bytesRead;
+            while ((bytesRead = stream.Read(buffer, 0, bufferSize)) > 0)
+            {
+                Update(buffer.AsSpan()[..bytesRead]);
+            }
+
+            ArrayPool<byte>.Shared.Return(buffer);
+
+            return Digest();
+        }
+
+        private void Update(ReadOnlySpan<byte> data)
+        {
+            UpdateInternal(data);
+        }
+
+        private ulong Digest()
+        {
+            ReadOnlySpan<byte> secret = this._externalSecret is null
+                ? this._customSecret
+                : this._externalSecret;
+            if (this._totalLength > XXH3_MIDSIZE_MAX)
+            {
+                Span<ulong> accumulator = stackalloc ulong[XXH_ACC_NB];
+
+                DigestLong(accumulator, secret);
+                return xxh3_merge_accs(
+                    accumulator,
+                    secret[XXH_SECRET_MERGEACCS_START..],
+                    (ulong)this._totalLength * XXHash.XXH_PRIME64_1
+                );
+            }
+
+            return this.UseSeed switch
+            {
+                true => Hash64(this._buffer, this._seed),
+                false => Hash64(this._buffer, secret)
+            };
+        }
+        #endregion
+        // ---------------------------------- PUBLIC STREAMING API ---------------------------------- //
+
+        // ---------------------------------- PUBLIC IMMEDIATE API ---------------------------------- //
+        #region Public Immediate API
         public static ulong Hash64(ReadOnlySpan<byte> data) => Hash64(data, XXH3_SECRET, 0);
 
         public static ulong Hash64(ReadOnlySpan<byte> data, ulong seed) =>
@@ -451,8 +162,7 @@ namespace XXHash3NET
 
         public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret) =>
             Hash64(data, secret, 0);
-
-        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5228
+        
         public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret, ulong seed)
         {
             Guard.IsGreaterThanOrEqualTo(
@@ -479,10 +189,30 @@ namespace XXHash3NET
             }
         }
         #endregion
-        // --------------------------------------- PUBLIC API --------------------------------------- //
+        // ---------------------------------- PUBLIC IMMEDIATE API ---------------------------------- //
+
+        // ------------------------------------ STREAM PUBLIC API ----------------------------------- //
+        #region Stream Public API
+        public static ulong Hash64(Stream stream) => Hash64(stream, XXH3_SECRET, 0);
+
+        public static ulong Hash64(Stream stream, ulong seed) => Hash64(stream, XXH3_SECRET, seed);
+
+        public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret) =>
+            Hash64(stream, secret, 0);
+
+        public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret, ulong seed, int bufferSize = 8192)
+        {
+            XXHash3 state = Create(seed, secret);
+            return state.Hash64(stream, bufferSize);
+        }
+        #endregion
+        // ------------------------------------ STREAM PUBLIC API ----------------------------------- //
 
         // --------------------------------- XXH3 INTERNAL ROUTINES --------------------------------- //
-        #region XXHash3 internal routines
+        #region XXHash3 Internal routines
+
+        // ---------------------------- XXH3 INTERNAL IMMEDIATE ROUTINES ---------------------------- //
+        #region XXHash3 Internal Immediate routines
         private static ulong xxh3_0to16_64(
             ReadOnlySpan<byte> data,
             ReadOnlySpan<byte> secret,
@@ -654,7 +384,328 @@ namespace XXHash3NET
             return xxh3_merge_accs(acc, secret[11..], (ulong)data.Length * XXHash.XXH_PRIME64_1);
         }
         #endregion
+        // ---------------------------- XXH3 INTERNAL IMMEDIATE ROUTINES ---------------------------- //
+
+        // ---------------------------- XXH3 INTERNAL STREAMING ROUTINES ---------------------------- //
+        #region XXHash3 Internal Streaming routines
+        private void Reset(ulong seed, ReadOnlySpan<byte> secret)
+        {
+            this._accumulator = new ulong[8]
+            {
+                XXHash.XXH_PRIME32_3,
+                XXHash.XXH_PRIME64_1,
+                XXHash.XXH_PRIME64_2,
+                XXHash.XXH_PRIME64_3,
+                XXHash.XXH_PRIME64_4,
+                XXHash.XXH_PRIME32_2,
+                XXHash.XXH_PRIME64_5,
+                XXHash.XXH_PRIME32_1
+            };
+
+            this._seed = seed;
+            this.UseSeed = seed != 0;
+
+            this._externalSecret = new byte[secret.Length];
+            secret.CopyTo(this._externalSecret);
+            this._secretLimit = secret.Length - XXHash.XXH_STRIPE_LEN;
+            this._stripeCountPerBlock = this._secretLimit / XXHash.XXH_SECRET_CONSUME_RATE;
+        }
+
+        private void InitializeCustomSecretScalar(ulong seed)
+        {
+            for (int i = 0; i < XXH3_SECRET.Length / 16; i++)
+            {
+                ulong low = XXHash.Read64Le(this._customSecret.AsSpan()[(i * 16)..]) + seed;
+                ulong high = XXHash.Read64Le(this._customSecret.AsSpan()[(i * 16 + 8)..]) - seed;
+
+                XXHash.Write64Le(this._customSecret.AsSpan()[(i * 16)..], low);
+                XXHash.Write64Le(this._customSecret.AsSpan()[(i * 16 + 8)..], high);
+            }
+        }
+
+        // https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5446
+        internal static void ConsumeStripes(
+            Span<ulong> accumulator,
+            ref int currentStripeCount,
+            int stripeCountPerBlock,
+            ReadOnlySpan<byte> input,
+            int stripeCount,
+            ReadOnlySpan<byte> secret,
+            int secretLimit
+        )
+        {
+            Guard.IsLessThanOrEqualTo(stripeCount, stripeCountPerBlock, nameof(stripeCount));
+            Guard.IsLessThan(currentStripeCount, stripeCountPerBlock, nameof(currentStripeCount));
+
+            if (stripeCountPerBlock - currentStripeCount <= stripeCount)
+            {
+                int stripeCountUntilEndOfBlock = stripeCountPerBlock - currentStripeCount;
+                int stripeCountAfterBlock = stripeCount - stripeCountUntilEndOfBlock;
+
+                xxh3_accumulate(
+                    accumulator,
+                    input,
+                    secret[(currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
+                    stripeCountUntilEndOfBlock
+                );
+                xxh3_scramble_acc(accumulator, secret[secretLimit..]);
+                xxh3_accumulate(
+                    accumulator,
+                    input[(stripeCountUntilEndOfBlock * XXHash.XXH_STRIPE_LEN)..],
+                    secret,
+                    stripeCountAfterBlock
+                );
+
+                currentStripeCount = stripeCountAfterBlock;
+            }
+            else
+            {
+                xxh3_accumulate(
+                    accumulator,
+                    input,
+                    secret[(currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
+                    stripeCount
+                );
+
+                currentStripeCount += stripeCount;
+            }
+        }
+
+        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5478
+        internal void UpdateInternal(ReadOnlySpan<byte> data)
+        {
+            ReadOnlySpan<byte> secret = this._externalSecret is null
+                ? this._customSecret
+                : this._externalSecret;
+
+            this._totalLength += data.Length;
+
+            if (this._bufferedSize > XXH3_INTERNALBUFFER_SIZE)
+            {
+                ThrowHelper.ThrowInvalidOperationException(
+                    $"{nameof(this._bufferedSize)} > {nameof(XXH3_INTERNALBUFFER_SIZE)}"
+                );
+            }
+
+            // small input
+            if (this._bufferedSize + data.Length <= XXH3_INTERNALBUFFER_SIZE)
+            {
+                data.CopyTo(this._buffer.AsSpan()[this._bufferedSize..]);
+                this._bufferedSize += data.Length;
+                return;
+            }
+
+            int internalBufferStripeCount = XXH3_INTERNALBUFFER_SIZE / XXHash.XXH_STRIPE_LEN;
+            int dataOffset = 0;
+            if (this._bufferedSize != 0)
+            {
+                int loadSize = XXH3_INTERNALBUFFER_SIZE - this._bufferedSize;
+
+                data[..loadSize].CopyTo(this._buffer.AsSpan()[this._bufferedSize..]);
+                dataOffset += loadSize;
+
+                ConsumeStripes(
+                    this._accumulator,
+                    ref this._currentStripeCount,
+                    this._stripeCountPerBlock,
+                    this._buffer,
+                    internalBufferStripeCount,
+                    secret,
+                    this._secretLimit
+                );
+
+                this._bufferedSize = 0;
+            }
+
+            if (dataOffset >= data.Length)
+            {
+                ThrowHelper.ThrowInvalidOperationException(
+                    $"{nameof(dataOffset)} >= {nameof(data.Length)}"
+                );
+            }
+
+            // large input
+            if (data.Length - dataOffset > this._stripeCountPerBlock * XXHash.XXH_STRIPE_LEN)
+            {
+                int stripeCount = (data.Length - 1 - dataOffset) / XXHash.XXH_STRIPE_LEN;
+                if (this._stripeCountPerBlock < this._currentStripeCount)
+                {
+                    ThrowHelper.ThrowInvalidOperationException(
+                        $"{nameof(this._stripeCountPerBlock)} < {nameof(this._currentStripeCount)}"
+                    );
+                }
+
+                // join to current block's end
+                {
+                    int stripeCountUntilEnd = this._stripeCountPerBlock - this._currentStripeCount;
+                    if (stripeCountUntilEnd > stripeCount)
+                    {
+                        ThrowHelper.ThrowInvalidOperationException(
+                            $"{nameof(stripeCountUntilEnd)} > {nameof(stripeCount)}"
+                        );
+                    }
+
+                    xxh3_accumulate(
+                        this._accumulator,
+                        data[dataOffset..],
+                        secret[(this._currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
+                        stripeCountUntilEnd
+                    );
+                    xxh3_scramble_acc(this._accumulator, secret[this._secretLimit..]);
+
+                    this._currentStripeCount = 0;
+                    dataOffset += stripeCountUntilEnd * XXHash.XXH_STRIPE_LEN;
+                    stripeCount -= stripeCountUntilEnd;
+                }
+
+                // consume per entire blocks
+                while (stripeCount >= this._stripeCountPerBlock)
+                {
+                    xxh3_accumulate(
+                        this._accumulator,
+                        data[dataOffset..],
+                        secret,
+                        this._stripeCountPerBlock
+                    );
+                    xxh3_scramble_acc(this._accumulator, secret[this._secretLimit..]);
+
+                    dataOffset += this._stripeCountPerBlock * XXHash.XXH_STRIPE_LEN;
+                    stripeCount -= this._stripeCountPerBlock;
+                }
+
+                // consume last partial block
+                {
+                    xxh3_accumulate(
+                        this._accumulator,
+                        data[dataOffset..],
+                        secret,
+                        stripeCount
+                    );
+
+                    dataOffset += stripeCount * XXHash.XXH_STRIPE_LEN;
+                    if (dataOffset >= data.Length)
+                    {
+                        ThrowHelper.ThrowInvalidOperationException(
+                            $"{nameof(dataOffset)} >= {nameof(data.Length)}"
+                        );
+                    }
+
+                    this._currentStripeCount = stripeCount;
+
+                    data.Slice(dataOffset - XXHash.XXH_STRIPE_LEN, XXHash.XXH_STRIPE_LEN)
+                        .CopyTo(this._buffer.AsSpan()[^XXHash.XXH_STRIPE_LEN..]);
+
+                    if (data.Length - dataOffset > XXHash.XXH_STRIPE_LEN)
+                    {
+                        ThrowHelper.ThrowInvalidOperationException(
+                            $"{nameof(data.Length)} - {nameof(dataOffset)} > {nameof(XXHash.XXH_STRIPE_LEN)}"
+                        );
+                    }
+                }
+            }
+            else
+            {
+                // content to consume <= block size
+                // Consume input by a multiple of internal buffer size
+                if (data.Length - dataOffset > XXH3_INTERNALBUFFER_SIZE)
+                {
+                    int limit = data.Length - XXH3_INTERNALBUFFER_SIZE;
+                    do
+                    {
+                        ConsumeStripes(
+                            this._accumulator,
+                            ref this._currentStripeCount,
+                            this._stripeCountPerBlock,
+                            data[dataOffset..],
+                            internalBufferStripeCount,
+                            secret,
+                            this._secretLimit
+                        );
+
+                        dataOffset += XXH3_INTERNALBUFFER_SIZE;
+                    } while (dataOffset < limit);
+
+                    data.Slice(dataOffset - XXHash.XXH_STRIPE_LEN, XXHash.XXH_STRIPE_LEN)
+                        .CopyTo(this._buffer.AsSpan()[^XXHash.XXH_STRIPE_LEN..]);
+                }
+            }
+
+            if (dataOffset >= data.Length)
+            {
+                ThrowHelper.ThrowInvalidOperationException(
+                    $"{nameof(dataOffset)} >= {nameof(data.Length)}"
+                );
+            }
+            if (data.Length - dataOffset > XXHash.XXH_STRIPE_LEN)
+            {
+                ThrowHelper.ThrowInvalidOperationException(
+                    $"{nameof(data.Length)} - {nameof(dataOffset)} > {nameof(XXHash.XXH_STRIPE_LEN)}"
+                );
+            }
+            if (this._bufferedSize != 0)
+            {
+                ThrowHelper.ThrowInvalidOperationException($"{nameof(this._bufferedSize)} != 0");
+            }
+
+            data[dataOffset..].CopyTo(this._buffer);
+            this._bufferedSize = data.Length - dataOffset;
+        }
+
+        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5602
+        private void DigestLong(Span<ulong> accumulator, ReadOnlySpan<byte> secret)
+        {
+            this._accumulator.CopyTo(accumulator);
+
+            if (this._bufferedSize >= XXHash.XXH_STRIPE_LEN)
+            {
+                int stripeCount = (this._bufferedSize - 1) / XXHash.XXH_STRIPE_LEN;
+                int currentStripeCount = this._currentStripeCount;
+
+                ConsumeStripes(
+                    accumulator,
+                    ref currentStripeCount,
+                    this._stripeCountPerBlock,
+                    this._buffer,
+                    stripeCount,
+                    secret,
+                    this._secretLimit
+                );
+
+                xxh3_accumulate_512(
+                    accumulator,
+                    this._buffer.AsSpan()[(this._bufferedSize - XXHash.XXH_STRIPE_LEN)..],
+                    secret[(this._secretLimit - XXH_SECRET_LASTACC_START)..]
+                );
+            }
+            else
+            {
+                Span<byte> lastStripe = stackalloc byte[XXHash.XXH_STRIPE_LEN];
+                int catchupSize = XXHash.XXH_STRIPE_LEN - this._bufferedSize;
+
+                if (this._bufferedSize <= 0)
+                {
+                    ThrowHelper.ThrowInvalidOperationException(
+                        $"{nameof(this._bufferedSize)} <= 0"
+                    );
+                }
+
+                this._buffer.AsSpan()[^catchupSize..].CopyTo(lastStripe);
+                this._buffer.AsSpan()[..this._bufferedSize].CopyTo(lastStripe[catchupSize..]);
+
+                xxh3_accumulate_512(
+                    accumulator,
+                    lastStripe,
+                    secret[(this._secretLimit - XXH_SECRET_LASTACC_START)..]
+                );
+            }
+        }
+        #endregion
+        // ---------------------------- XXH3 INTERNAL STREAMING ROUTINES ---------------------------- //
+
+        #endregion
         // --------------------------------- XXH3 INTERNAL ROUTINES --------------------------------- //
+
+
 
         internal static ulong xxh3_merge_accs(
             Span<ulong> acc,
