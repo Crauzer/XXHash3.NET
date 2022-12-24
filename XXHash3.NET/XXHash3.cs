@@ -630,12 +630,7 @@ namespace XXHash3NET
                 Span<byte> lastStripe = stackalloc byte[XXHash.XXH_STRIPE_LEN];
                 int catchupSize = XXHash.XXH_STRIPE_LEN - this._bufferedSize;
 
-                if (this._bufferedSize <= 0)
-                {
-                    ThrowHelper.ThrowInvalidOperationException(
-                        $"{nameof(this._bufferedSize)} <= 0"
-                    );
-                }
+                Debug.Assert(this._bufferedSize > 0);
 
                 this._buffer.AsSpan()[^catchupSize..].CopyTo(lastStripe);
                 this._buffer.AsSpan()[..this._bufferedSize].CopyTo(lastStripe[catchupSize..]);
