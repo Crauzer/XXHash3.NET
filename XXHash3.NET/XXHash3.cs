@@ -914,7 +914,7 @@ namespace XXHash3NET
             (value << (64 - shift)) | (value >> shift);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static byte _mm_shuffle(byte p3, byte p2, byte p1, byte p0) =>
+        private static byte _mm_shuffle(byte p3, byte p2, byte p1, byte p0) =>
             (byte)((p3 << 6) | (p2 << 4) | (p1 << 2) | p0);
         #endregion
 
