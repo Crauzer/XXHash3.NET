@@ -225,7 +225,7 @@ namespace XXHash3NET
                 ulong input_high = XXHash.Read64Le(data[(data.Length - 8)..]) ^ bitflip2;
                 ulong acc =
                     (ulong)data.Length
-                    + swap64(input_low)
+                    + Swap64(input_low)
                     + input_high
                     + xxh3_mul128_fold64(input_low, input_high);
 
@@ -237,7 +237,7 @@ namespace XXHash3NET
                 ulong seed
             )
             {
-                seed ^= (ulong)swap32((uint)seed) << 32;
+                seed ^= (ulong)Swap32((uint)seed) << 32;
 
                 uint input1 = XXHash.Read32Le(data);
                 uint input2 = XXHash.Read32Le(data[(data.Length - 4)..]);
@@ -723,7 +723,7 @@ namespace XXHash3NET
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ulong xxh3_rrmxmx(ulong h64, ulong len)
         {
-            h64 ^= rotl64(h64, 49) ^ rotl64(h64, 24);
+            h64 ^= RotLeft64(h64, 49) ^ RotLeft64(h64, 24);
             h64 *= 0x9FB21C651E98DF25UL;
             h64 ^= (h64 >> 35) + len;
             h64 *= 0x9FB21C651E98DF25UL;
@@ -897,34 +897,22 @@ namespace XXHash3NET
 
         #region Common bit twiddling utilities
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static uint swap32(uint value)
-        {
-            return BinaryPrimitives.ReverseEndianness(value);
-        }
+        private static uint Swap32(uint value) => BinaryPrimitives.ReverseEndianness(value);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong swap64(ulong value)
-        {
-            return BinaryPrimitives.ReverseEndianness(value);
-        }
+        private static ulong Swap64(ulong value) => BinaryPrimitives.ReverseEndianness(value);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong rotl64(ulong value, int shift)
-        {
-            return (value << shift) | (value >> (64 - shift));
-        }
+        private static ulong RotLeft64(ulong value, int shift) =>
+            (value << shift) | (value >> (64 - shift));
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong rotr64(ulong value, int shift)
-        {
-            return (value << (64 - shift)) | (value >> shift);
-        }
+        private static ulong RotRight64(ulong value, int shift) =>
+            (value << (64 - shift)) | (value >> shift);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static byte _mm_shuffle(byte p3, byte p2, byte p1, byte p0)
-        {
-            return (byte)((p3 << 6) | (p2 << 4) | (p1 << 2) | p0);
-        }
+        public static byte _mm_shuffle(byte p3, byte p2, byte p1, byte p0) =>
+            (byte)((p3 << 6) | (p2 << 4) | (p1 << 2) | p0);
         #endregion
 
         #region Dispose
