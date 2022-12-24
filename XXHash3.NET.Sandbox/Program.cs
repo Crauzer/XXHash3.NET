@@ -77,7 +77,7 @@ namespace XXHash3NET.Sandbox
             ulong digest = XXHash3.Hash64(stream);
 
             string checksum = string.Format("0x{0:x}", digest);
-            if (checksum != originalChecksum) { }
+            //if (checksum != originalChecksum) { }
         }
     }
 }
