@@ -28,7 +28,7 @@ namespace XXHash3NET
         private int _bufferedSize;
         private bool _useSeed;
         private int _currentStripeCount;
-        private long _totalLength;
+        private int _totalLength;
         private int _stripeCountPerBlock;
         private int _secretLimit;
         private ulong _seed;
@@ -142,7 +142,7 @@ namespace XXHash3NET
             {
                 return xxh3_17to128_64(data, secret, seed);
             }
-            else if (data.Length <= 240)
+            else if (data.Length <= XXH3_MIDSIZE_MAX)
             {
                 return xxh3_129to240_64(data, secret, seed);
             }
@@ -263,29 +263,29 @@ namespace XXHash3NET
         )
         {
             ulong acc = (ulong)data.Length * XXHash.XXH_PRIME64_1;
+            ulong accEnd = 0;
 
+            acc += xxh3_mix16B(data, secret, seed);
+            accEnd += xxh3_mix16B(data[(data.Length - 16)..], secret[16..], seed);
             if (data.Length > 32)
             {
+                acc += xxh3_mix16B(data[16..], secret[32..], seed);
+                accEnd += xxh3_mix16B(data[(data.Length - 32)..], secret[48..], seed);
+
                 if (data.Length > 64)
                 {
+                    acc += xxh3_mix16B(data[32..], secret[64..], seed);
+                    accEnd += xxh3_mix16B(data[(data.Length - 48)..], secret[80..], seed);
+
                     if (data.Length > 96)
                     {
                         acc += xxh3_mix16B(data[48..], secret[96..], seed);
-                        acc += xxh3_mix16B(data[(data.Length - 64)..], secret[112..], seed);
+                        accEnd += xxh3_mix16B(data[(data.Length - 64)..], secret[112..], seed);
                     }
-
-                    acc += xxh3_mix16B(data[32..], secret[64..], seed);
-                    acc += xxh3_mix16B(data[(data.Length - 48)..], secret[80..], seed);
                 }
-
-                acc += xxh3_mix16B(data[16..], secret[32..], seed);
-                acc += xxh3_mix16B(data[(data.Length - 32)..], secret[48..], seed);
             }
 
-            acc += xxh3_mix16B(data, secret, seed);
-            acc += xxh3_mix16B(data[(data.Length - 16)..], secret[16..], seed);
-
-            return xxh3_avalanche(acc);
+            return xxh3_avalanche(acc + accEnd);
         }
 
         private static ulong xxh3_129to240_64(
@@ -608,8 +608,8 @@ namespace XXHash3NET
 
             return this._useSeed switch
             {
-                true => Hash64(this._buffer, this._seed),
-                false => Hash64(this._buffer, secret)
+                true => Hash64(this._buffer.AsSpan(0, this._totalLength), this._seed),
+                false => Hash64(this._buffer.AsSpan(0, this._totalLength), secret)
             };
         }
 
