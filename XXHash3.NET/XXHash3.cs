@@ -494,7 +494,9 @@ namespace XXHash3NET
             {
                 int loadSize = XXH3_INTERNALBUFFER_SIZE - this._bufferedSize;
 
-                data[dataOffset..(dataOffset + loadSize)].CopyTo(this._buffer.AsSpan(this._bufferedSize));
+                data[dataOffset..(dataOffset + loadSize)].CopyTo(
+                    this._buffer.AsSpan(this._bufferedSize)
+                );
                 dataOffset += loadSize;
 
                 ConsumeStripes(
@@ -876,7 +878,7 @@ namespace XXHash3NET
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong xxh_mul32to64(ulong x, ulong y) => (ulong)(uint)x * (ulong)(uint)y;
+        private static ulong xxh_mul32to64(ulong x, ulong y) => (x & 0xFFFFFFFF) * (y & 0xFFFFFFFF);
         #endregion
 
         #region Common bit twiddling utilities
