@@ -6,10 +6,9 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/Crauzer/XXHash3.NET</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Crauzer/XXHash3.NET</PackageProjectUrl>
-     <LangVersion>preview</LangVersion>
-     <AssemblyVersion>1.2.2.0</AssemblyVersion>
-     <Version>1.2.2</Version>
-     <RootNamespace>XXHash3NET</RootNamespace>
+    <LangVersion>11</LangVersion>
+    <Version>1.2.3</Version>
+    <RootNamespace>XXHash3NET</RootNamespace>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
