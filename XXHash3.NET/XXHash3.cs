@@ -475,7 +475,7 @@ namespace XXHash3NET
             }
             else
             {
-                return xxh3_hashLong_64(data, secret, seed);
+                return xxh3_hashLong_64(data, secret);
             }
         }
         #endregion
@@ -616,11 +616,7 @@ namespace XXHash3NET
             return xxh3_avalanche(acc);
         }
 
-        private static ulong xxh3_hashLong_64(
-            ReadOnlySpan<byte> data,
-            ReadOnlySpan<byte> secret,
-            ulong seed
-        )
+        private static ulong xxh3_hashLong_64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret)
         {
             ulong[] acc = new ulong[8]
             {
@@ -644,7 +640,8 @@ namespace XXHash3NET
                 xxh3_scramble_acc_scalar(acc, secret[(secret.Length - XXHash.XXH_STRIPE_LEN)..]);
             }
 
-            int stripeCount = ((data.Length - 1) - (blockLength * blockCount)) / XXHash.XXH_STRIPE_LEN;
+            int stripeCount =
+                ((data.Length - 1) - (blockLength * blockCount)) / XXHash.XXH_STRIPE_LEN;
             xxh3_accumulate(acc, data[(blockCount * blockLength)..], secret, stripeCount);
 
             ReadOnlySpan<byte> p = data[(data.Length - XXHash.XXH_STRIPE_LEN)..];
