@@ -4,6 +4,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 #if NETCOREAPP
 using System.Runtime.Intrinsics.X86;
@@ -25,7 +26,7 @@ namespace XXHash3NET
         private byte[] _buffer = new byte[XXH3_INTERNALBUFFER_SIZE];
 
         private int _bufferedSize;
-        internal bool UseSeed;
+        private bool _useSeed;
         private int _currentStripeCount;
         private long _totalLength;
         private int _stripeCountPerBlock;
@@ -101,7 +102,7 @@ namespace XXHash3NET
             XXHash3 state = new();
             state.Reset(seed, secret);
             // seed can be 0
-            state.UseSeed = true;
+            state._useSeed = true;
 
             return state;
         }
@@ -136,7 +137,7 @@ namespace XXHash3NET
                 );
             }
 
-            return this.UseSeed switch
+            return this._useSeed switch
             {
                 true => Hash64(this._buffer, this._seed),
                 false => Hash64(this._buffer, secret)
@@ -177,12 +178,23 @@ namespace XXHash3NET
         #endregion
 
         #region Stream Public API
-        public static ulong Hash64(Stream stream) => Hash64(stream, XXH3_SECRET, 0);
+        public static ulong Hash64(Stream stream)
+        {
+            using XXHash3 state = Create();
+            return state.HashData64(stream);
+        }
 
-        public static ulong Hash64(Stream stream, ulong seed) => Hash64(stream, XXH3_SECRET, seed);
+        public static ulong Hash64(Stream stream, ulong seed)
+        {
+            using XXHash3 state = Create(seed);
+            return state.HashData64(stream);
+        }
 
-        public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret) =>
-            Hash64(stream, secret, 0);
+        public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret)
+        {
+            using XXHash3 state = Create(secret);
+            return state.HashData64(stream);
+        }
 
         public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret, ulong seed)
         {
@@ -381,7 +393,7 @@ namespace XXHash3NET
             };
 
             this._seed = seed;
-            this.UseSeed = seed != 0;
+            this._useSeed = seed != 0;
 
             Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
             this._externalSecret = new byte[secret.Length];
