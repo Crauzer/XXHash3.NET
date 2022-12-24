@@ -41,7 +41,7 @@ namespace XXHash3NET
         private bool _isDisposed;
 
         // csharpier-ignore
-        internal static readonly byte[] XXH3_SECRET = new byte[192]
+        private static readonly byte[] XXH3_SECRET = new byte[192]
         {
             0xb8, 0xfe, 0x6c, 0x39, 0x23, 0xa4, 0x4b, 0xbe, 0x7c, 0x01, 0x81, 0x2c, 0xf7, 0x21, 0xad, 0x1c,
             0xde, 0xd4, 0x6d, 0xe9, 0x83, 0x90, 0x97, 0xdb, 0x72, 0x40, 0xa4, 0xa4, 0xb7, 0xb3, 0x67, 0x1f,
@@ -666,7 +666,7 @@ namespace XXHash3NET
         #endregion
         #endregion
 
-        internal static ulong xxh3_merge_accs(
+        private static ulong xxh3_merge_accs(
             Span<ulong> acc,
             ReadOnlySpan<byte> secret,
             ulong start
@@ -738,7 +738,7 @@ namespace XXHash3NET
         }
 
         #region XXHash3 Accumulate
-        internal static unsafe void xxh3_accumulate(
+        private static unsafe void xxh3_accumulate(
             Span<ulong> acc,
             ReadOnlySpan<byte> data,
             ReadOnlySpan<byte> secret,
@@ -811,13 +811,13 @@ namespace XXHash3NET
 
         #region XXHash3 Scramble Acc
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void xxh3_scramble_acc(
+        private static void xxh3_scramble_acc(
             Span<ulong> accumulator,
             ReadOnlySpan<byte> secret
         ) => xxh3_scramble_acc_scalar(accumulator, secret);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void xxh3_scramble_acc_scalar(
+        private static void xxh3_scramble_acc_scalar(
             Span<ulong> accumulator,
             ReadOnlySpan<byte> secret
         )
@@ -829,7 +829,7 @@ namespace XXHash3NET
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void xxh3_scramble_acc_scalar_round(
+        private static void xxh3_scramble_acc_scalar_round(
             Span<ulong> accumulator,
             ReadOnlySpan<byte> secret,
             int lane
