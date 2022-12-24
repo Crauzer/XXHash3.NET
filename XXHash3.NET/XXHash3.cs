@@ -161,11 +161,7 @@ namespace XXHash3NET
 
         public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret, ulong seed)
         {
-            Guard.IsGreaterThanOrEqualTo(
-                secret.Length,
-                XXH3_SECRET_SIZE_MIN,
-                nameof(secret.Length)
-            );
+            Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
 
             if (data.Length <= 16)
             {
