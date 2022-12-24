@@ -73,6 +73,7 @@ namespace XXHash3NET
         /// <summary>
         /// Creates a new <see cref="XXHash3"/> instance using the provided seed and the default secret
         /// </summary>
+        /// <param name="seed">The seed to use</param>
         public static XXHash3 Create(ulong seed)
         {
             XXHash3 state = new();
@@ -95,6 +96,7 @@ namespace XXHash3NET
         /// <summary>
         /// Creates a new <see cref="XXHash3"/> instance using the provided secret and the default seed
         /// </summary>
+        /// <param name="secret">The secret to use</param>
         public static XXHash3 Create(ReadOnlySpan<byte> secret)
         {
             Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
@@ -107,6 +109,8 @@ namespace XXHash3NET
         /// <summary>
         /// Creates a new <see cref="XXHash3"/> instance using the provided seed and secret
         /// </summary>
+        /// <param name="seed">The seed to use</param>
+        /// <param name="secret">The secret to use</param>
         public static XXHash3 Create(ulong seed, ReadOnlySpan<byte> secret)
         {
             Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
@@ -122,6 +126,7 @@ namespace XXHash3NET
         /// <summary>
         /// Computes a checksum by reading data from <paramref name="stream"/> until the end
         /// </summary>
+        /// <param name="stream">The stream to read from</param>
         public ulong HashData64(Stream stream)
         {
             Guard.IsNotNull(stream, nameof(stream));
@@ -137,14 +142,34 @@ namespace XXHash3NET
         #endregion
 
         #region Public Immediate API
+        /// <summary>
+        /// Computes a 64-bit hash using the default secret and seed
+        /// </summary>
+        /// <param name="data">The data to hash</param>
         public static ulong Hash64(ReadOnlySpan<byte> data) => Hash64(data, XXH3_SECRET, 0);
 
+        /// <summary>
+        /// Computes a 64-bit hash using the default secret and the provided seed
+        /// </summary>
+        /// <param name="data">The data to hash</param>
+        /// <param name="seed">The seed to use</param>
         public static ulong Hash64(ReadOnlySpan<byte> data, ulong seed) =>
             Hash64(data, XXH3_SECRET, seed);
 
+        /// <summary>
+        /// Computes a 64-bit hash using the provided secret and the default seed
+        /// </summary>
+        /// <param name="data">The data to hash</param>
+        /// <param name="secret">The secret to use</param>
         public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret) =>
             Hash64(data, secret, 0);
 
+        /// <summary>
+        /// Computes a 64-bit hash using the provided secret and seed
+        /// </summary>
+        /// <param name="data">The data to hash</param>
+        /// <param name="secret">The secret to use</param>
+        /// <param name="seed">The seed to use</param>
         public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret, ulong seed)
         {
             Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
