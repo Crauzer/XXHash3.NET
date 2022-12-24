@@ -60,6 +60,9 @@ namespace XXHash3NET
         private XXHash3() => this._streamBuffer = ArrayPool<byte>.Shared.Rent(STREAM_BUFFER_SIZE);
 
         #region Public Streaming API
+        /// <summary>
+        /// Creates a new <see cref="XXHash3"/> instance using a default seed and secret
+        /// </summary>
         public static XXHash3 Create()
         {
             XXHash3 state = new();
@@ -67,6 +70,9 @@ namespace XXHash3NET
             return state;
         }
 
+        /// <summary>
+        /// Creates a new <see cref="XXHash3"/> instance using the provided seed and the default secret
+        /// </summary>
         public static XXHash3 Create(ulong seed)
         {
             XXHash3 state = new();
@@ -86,6 +92,9 @@ namespace XXHash3NET
             return state;
         }
 
+        /// <summary>
+        /// Creates a new <see cref="XXHash3"/> instance using the provided secret and the default seed
+        /// </summary>
         public static XXHash3 Create(ReadOnlySpan<byte> secret)
         {
             Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
@@ -95,6 +104,9 @@ namespace XXHash3NET
             return state;
         }
 
+        /// <summary>
+        /// Creates a new <see cref="XXHash3"/> instance using the provided seed and secret
+        /// </summary>
         public static XXHash3 Create(ulong seed, ReadOnlySpan<byte> secret)
         {
             Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
@@ -107,6 +119,9 @@ namespace XXHash3NET
             return state;
         }
 
+        /// <summary>
+        /// Computes a checksum by reading data from <paramref name="stream"/> until the end
+        /// </summary>
         public ulong HashData64(Stream stream)
         {
             Guard.IsNotNull(stream, nameof(stream));
