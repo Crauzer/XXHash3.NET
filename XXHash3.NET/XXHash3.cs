@@ -108,6 +108,8 @@ namespace XXHash3NET
 
         public ulong HashData64(Stream stream)
         {
+            Guard.IsNotNull(stream, nameof(stream));
+
             int bytesRead;
             while ((bytesRead = stream.Read(this._streamBuffer, 0, this._streamBuffer.Length)) > 0)
             {
