@@ -9,7 +9,7 @@ using System.Runtime.Intrinsics.X86;
 #endif
 namespace XXHash3NET
 {
-    public sealed class XXHash3
+    public sealed class XXHash3 : IDisposable
     {
         internal const int XXH_ACC_NB = (XXHash.XXH_STRIPE_LEN / sizeof(ulong));
         internal const int XXH3_MIDSIZE_MAX = 240;
@@ -33,6 +33,11 @@ namespace XXHash3NET
         private readonly ulong _reserved64;
         private byte[] _externalSecret;
 
+        private const int STREAM_BUFFER_SIZE = 8192;
+        private byte[] _streamBuffer;
+
+        private bool _isDisposed;
+
         // csharpier-ignore
         internal static readonly byte[] XXH3_SECRET = new byte[192]
         {
@@ -50,7 +55,8 @@ namespace XXHash3NET
             0x45, 0xcb, 0x3a, 0x8f, 0x95, 0x16, 0x04, 0x28, 0xaf, 0xd7, 0xfb, 0xca, 0xbb, 0x4b, 0x40, 0x7e,
         };
 
-        // ---------------------------------- PUBLIC STREAMING API ---------------------------------- //
+        private XXHash3() => this._streamBuffer = ArrayPool<byte>.Shared.Rent(STREAM_BUFFER_SIZE);
+
         #region Public Streaming API
         public static XXHash3 Create()
         {
@@ -80,11 +86,7 @@ namespace XXHash3NET
 
         public static XXHash3 Create(ReadOnlySpan<byte> secret)
         {
-            Guard.IsLessThanOrEqualTo(
-                secret.Length,
-                XXH3_SECRET.Length,
-                nameof(secret.Length)
-            );
+            Guard.IsLessThanOrEqualTo(secret.Length, XXH3_SECRET.Length, nameof(secret.Length));
 
             XXHash3 state = new();
             state.Reset(0, secret);
@@ -93,11 +95,7 @@ namespace XXHash3NET
 
         public static XXHash3 Create(ulong seed, ReadOnlySpan<byte> secret)
         {
-            Guard.IsLessThanOrEqualTo(
-                secret.Length,
-                XXH3_SECRET.Length,
-                nameof(secret.Length)
-            );
+            Guard.IsLessThanOrEqualTo(secret.Length, XXH3_SECRET.Length, nameof(secret.Length));
 
             XXHash3 state = new();
             state.Reset(seed, secret);
@@ -107,24 +105,15 @@ namespace XXHash3NET
             return state;
         }
 
-        public ulong Hash64(Stream stream, int bufferSize = 8192)
+        public ulong HashData64(Stream stream)
         {
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
-
             int bytesRead;
-            while ((bytesRead = stream.Read(buffer, 0, bufferSize)) > 0)
+            while ((bytesRead = stream.Read(this._streamBuffer, 0, this._streamBuffer.Length)) > 0)
             {
-                Update(buffer.AsSpan()[..bytesRead]);
+                Update(this._streamBuffer.AsSpan()[..bytesRead]);
             }
 
-            ArrayPool<byte>.Shared.Return(buffer);
-
             return Digest();
-        }
-
-        private void Update(ReadOnlySpan<byte> data)
-        {
-            UpdateInternal(data);
         }
 
         private ulong Digest()
@@ -151,9 +140,7 @@ namespace XXHash3NET
             };
         }
         #endregion
-        // ---------------------------------- PUBLIC STREAMING API ---------------------------------- //
 
-        // ---------------------------------- PUBLIC IMMEDIATE API ---------------------------------- //
         #region Public Immediate API
         public static ulong Hash64(ReadOnlySpan<byte> data) => Hash64(data, XXH3_SECRET, 0);
 
@@ -162,7 +149,7 @@ namespace XXHash3NET
 
         public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret) =>
             Hash64(data, secret, 0);
-        
+
         public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret, ulong seed)
         {
             Guard.IsGreaterThanOrEqualTo(
@@ -189,9 +176,7 @@ namespace XXHash3NET
             }
         }
         #endregion
-        // ---------------------------------- PUBLIC IMMEDIATE API ---------------------------------- //
 
-        // ------------------------------------ STREAM PUBLIC API ----------------------------------- //
         #region Stream Public API
         public static ulong Hash64(Stream stream) => Hash64(stream, XXH3_SECRET, 0);
 
@@ -200,18 +185,18 @@ namespace XXHash3NET
         public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret) =>
             Hash64(stream, secret, 0);
 
-        public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret, ulong seed, int bufferSize = 8192)
+        public static ulong Hash64(
+            Stream stream,
+            ReadOnlySpan<byte> secret,
+            ulong seed
+        )
         {
-            XXHash3 state = Create(seed, secret);
-            return state.Hash64(stream, bufferSize);
+            using XXHash3 state = Create(seed, secret);
+            return state.HashData64(stream);
         }
         #endregion
-        // ------------------------------------ STREAM PUBLIC API ----------------------------------- //
 
-        // --------------------------------- XXH3 INTERNAL ROUTINES --------------------------------- //
         #region XXHash3 Internal routines
-
-        // ---------------------------- XXH3 INTERNAL IMMEDIATE ROUTINES ---------------------------- //
         #region XXHash3 Internal Immediate routines
         private static ulong xxh3_0to16_64(
             ReadOnlySpan<byte> data,
@@ -384,9 +369,7 @@ namespace XXHash3NET
             return xxh3_merge_accs(acc, secret[11..], (ulong)data.Length * XXHash.XXH_PRIME64_1);
         }
         #endregion
-        // ---------------------------- XXH3 INTERNAL IMMEDIATE ROUTINES ---------------------------- //
 
-        // ---------------------------- XXH3 INTERNAL STREAMING ROUTINES ---------------------------- //
         #region XXHash3 Internal Streaming routines
         private void Reset(ulong seed, ReadOnlySpan<byte> secret)
         {
@@ -424,7 +407,7 @@ namespace XXHash3NET
         }
 
         // https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5446
-        internal static void ConsumeStripes(
+        private static void ConsumeStripes(
             Span<ulong> accumulator,
             ref int currentStripeCount,
             int stripeCountPerBlock,
@@ -472,7 +455,7 @@ namespace XXHash3NET
         }
 
         //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5478
-        internal void UpdateInternal(ReadOnlySpan<byte> data)
+        private void Update(ReadOnlySpan<byte> data)
         {
             ReadOnlySpan<byte> secret = this._externalSecret is null
                 ? this._customSecret
@@ -575,12 +558,7 @@ namespace XXHash3NET
 
                 // consume last partial block
                 {
-                    xxh3_accumulate(
-                        this._accumulator,
-                        data[dataOffset..],
-                        secret,
-                        stripeCount
-                    );
+                    xxh3_accumulate(this._accumulator, data[dataOffset..], secret, stripeCount);
 
                     dataOffset += stripeCount * XXHash.XXH_STRIPE_LEN;
                     if (dataOffset >= data.Length)
@@ -700,12 +678,7 @@ namespace XXHash3NET
             }
         }
         #endregion
-        // ---------------------------- XXH3 INTERNAL STREAMING ROUTINES ---------------------------- //
-
         #endregion
-        // --------------------------------- XXH3 INTERNAL ROUTINES --------------------------------- //
-
-
 
         internal static ulong xxh3_merge_accs(
             Span<ulong> acc,
@@ -780,7 +753,6 @@ namespace XXHash3NET
             );
         }
 
-        // --------------------------------------- XXH3 ACCUMULATE --------------------------------------- //
         #region XXHash3 Accumulate
         internal static unsafe void xxh3_accumulate(
             Span<ulong> acc,
@@ -851,9 +823,7 @@ namespace XXHash3NET
             ReadOnlySpan<byte> secret
         ) { }
         #endregion
-        // --------------------------------------- XXH3 ACCUMULATE --------------------------------------- //
 
-        // -------------------------------------- XXH3 SCRAMBLE ACC -------------------------------------- //
         #region XXHash3 Scramble Acc
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static void xxh3_scramble_acc(Span<ulong> accumulator, ReadOnlySpan<byte> secret)
@@ -886,13 +856,10 @@ namespace XXHash3NET
         // TODO
         private static void xxh3_scramble_acc_avx2(ulong[] acc, ReadOnlySpan<byte> secret) { }
         #endregion
-        // -------------------------------------- XXH3 SCRAMBLE ACC -------------------------------------- //
 
+        #region XXHash3 bit twiddling utilities
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong xxh_xorshift64(ulong v64, int shift)
-        {
-            return v64 ^ (v64 >> shift);
-        }
+        private static ulong xxh_xorshift64(ulong v64, int shift) => v64 ^ (v64 >> shift);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static unsafe ulong xxh3_mul128_fold64(ulong lhs, ulong rhs)
@@ -931,12 +898,10 @@ namespace XXHash3NET
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong xxh_mul32to64(ulong x, ulong y)
-        {
-            return (ulong)(uint)x * (ulong)(uint)y;
-        }
+        private static ulong xxh_mul32to64(ulong x, ulong y) => (ulong)(uint)x * (ulong)(uint)y;
+        #endregion
 
-        // -------------- UTILITY METHODS -------------- \\
+        #region Common bit twiddling utilities
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static uint swap32(uint value)
         {
@@ -966,5 +931,27 @@ namespace XXHash3NET
         {
             return (byte)((p3 << 6) | (p2 << 4) | (p1 << 2) | p0);
         }
+        #endregion
+
+        #region Dispose
+        private void Dispose(bool disposing)
+        {
+            if (this._isDisposed is false)
+            {
+                if (disposing)
+                {
+                    ArrayPool<byte>.Shared.Return(this._streamBuffer);
+                }
+
+                this._isDisposed = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        #endregion
     }
 }
