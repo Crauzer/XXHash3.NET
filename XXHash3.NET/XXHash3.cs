@@ -763,14 +763,14 @@ namespace XXHash3NET
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void xxh3_accumulate_512(
+        private static void xxh3_accumulate_512(
             Span<ulong> acc,
             ReadOnlySpan<byte> data,
             ReadOnlySpan<byte> secret
         ) => xxh3_accumulate_512_scalar(acc, data, secret);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void xxh3_accumulate_512_scalar(
+        private static void xxh3_accumulate_512_scalar(
             Span<ulong> acc,
             ReadOnlySpan<byte> data,
             ReadOnlySpan<byte> secret
