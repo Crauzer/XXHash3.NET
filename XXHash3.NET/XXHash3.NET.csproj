@@ -8,8 +8,9 @@
     <PackageProjectUrl>https://github.com/Crauzer/XXHash3.NET</PackageProjectUrl>
     <Description>Pure C# implementation of the XXHash3 algorithm</Description>
     <LangVersion>11</LangVersion>
-    <Version>1.2.3</Version>
+    <Version>2.0.0</Version>
     <RootNamespace>XXHash3NET</RootNamespace>
+    <GenerateDocumentationFile>True</GenerateDocumentationFile>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
@@ -23,6 +24,10 @@
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <PackageReference Include="System.Memory" Version="4.5.5" />
     <PackageReference Include="IndexRange" Version="1.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Diagnostics" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

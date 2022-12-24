@@ -1,29 +1,49 @@
-﻿using System;
+﻿using CommunityToolkit.Diagnostics;
+using System;
+using System.Buffers;
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.IO;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 #if NETCOREAPP
 using System.Runtime.Intrinsics.X86;
 #endif
 namespace XXHash3NET
 {
-    public static class XXHash3
+    /// <summary>
+    /// Represents an XXHash3 context
+    /// </summary>
+    public sealed class XXHash3 : IDisposable
     {
+        internal const int XXH_ACC_NB = (XXHash.XXH_STRIPE_LEN / sizeof(ulong));
+        internal const int XXH3_MIDSIZE_MAX = 240;
+        internal const int XXH_SECRET_MERGEACCS_START = 11;
+        internal const int XXH_SECRET_LASTACC_START = 7;
+        internal const int XXH_SECRET_DEFAULT_SIZE = 192;
+        internal const int XXH3_SECRET_SIZE_MIN = 136;
+        internal const int XXH3_INTERNALBUFFER_SIZE = 256;
 
-        private const uint XXH_PRIME32_1 = 0x9E3779B1U;
-        private const uint XXH_PRIME32_2 = 0x85EBCA77U;
-        private const uint XXH_PRIME32_3 = 0xC2B2AE3DU;
-        private const uint XXH_PRIME32_4 = 0x27D4EB2FU;
-        private const uint XXH_PRIME32_5 = 0x165667B1U;
+        private ulong[] _accumulator = new ulong[8];
+        private byte[] _customSecret = new byte[XXH3_SECRET.Length];
+        private byte[] _buffer = new byte[XXH3_INTERNALBUFFER_SIZE];
 
-        private const ulong XXH_PRIME64_1 = 0x9E3779B185EBCA87UL;
-        private const ulong XXH_PRIME64_2 = 0xC2B2AE3D27D4EB4FUL;
-        private const ulong XXH_PRIME64_3 = 0x165667B19E3779F9UL;
-        private const ulong XXH_PRIME64_4 = 0x85EBCA77C2B2AE63UL;
-        private const ulong XXH_PRIME64_5 = 0x27D4EB2F165667C5UL;
+        private int _bufferedSize;
+        private bool _useSeed;
+        private int _currentStripeCount;
+        private int _totalLength;
+        private int _stripeCountPerBlock;
+        private int _secretLimit;
+        private ulong _seed;
+        private ulong _reserved64;
+        private byte[] _externalSecret;
 
-        private const int XXH_STRIPE_LEN = 64;
-        private const int XXH_ACC_NB = (XXH_STRIPE_LEN / sizeof(ulong));
+        private const int STREAM_BUFFER_SIZE = 64 * 1024;
+        private byte[] _streamBuffer;
 
+        private bool _isDisposed;
+
+        // csharpier-ignore
         private static readonly byte[] XXH3_SECRET = new byte[192]
         {
             0xb8, 0xfe, 0x6c, 0x39, 0x23, 0xa4, 0x4b, 0xbe, 0x7c, 0x01, 0x81, 0x2c, 0xf7, 0x21, 0xad, 0x1c,
@@ -40,109 +60,310 @@ namespace XXHash3NET
             0x45, 0xcb, 0x3a, 0x8f, 0x95, 0x16, 0x04, 0x28, 0xaf, 0xd7, 0xfb, 0xca, 0xbb, 0x4b, 0x40, 0x7e,
         };
 
-        public static ulong Hash64(ReadOnlySpan<byte> data, ulong seed = 0)
+        private XXHash3() => this._streamBuffer = ArrayPool<byte>.Shared.Rent(STREAM_BUFFER_SIZE);
+
+        #region Public Streaming API
+        /// <summary>
+        /// Creates a new <see cref="XXHash3"/> instance using a default seed and secret
+        /// </summary>
+        public static XXHash3 Create()
         {
-            return Hash64(data, data.Length, XXH3_SECRET, XXH3_SECRET.Length, seed);
-        }
-        public static ulong Hash64(ReadOnlySpan<byte> data, int length, ulong seed = 0)
-        {
-            return Hash64(data, length, XXH3_SECRET, XXH3_SECRET.Length, seed);
+            XXHash3 state = new();
+            state.Reset(0, XXH3_SECRET);
+            return state;
         }
 
-        public static ulong Hash64(ReadOnlySpan<byte> data, int length, ReadOnlySpan<byte> secret, int secretLength, ulong seed)
+        /// <summary>
+        /// Creates a new <see cref="XXHash3"/> instance using the provided seed and the default secret
+        /// </summary>
+        /// <param name="seed">The seed to use</param>
+        public static XXHash3 Create(ulong seed)
         {
-            if (length <= 16)
+            XXHash3 state = new();
+
+            if (seed == 0)
             {
-                return xxh3_0to16_64(data, length, secret, seed);
+                state.Reset(0, XXH3_SECRET);
+                return state;
             }
-            else if (length <= 128)
+
+            if (seed != state._seed || state._externalSecret is not null)
             {
-                return xxh3_17to128_64(data, length, secret, secretLength, seed);
+                state.InitializeCustomSecretScalar(seed);
             }
-            else if (length <= 240)
+            state.Reset(seed, XXH3_SECRET);
+
+            return state;
+        }
+
+        /// <summary>
+        /// Creates a new <see cref="XXHash3"/> instance using the provided secret and the default seed
+        /// </summary>
+        /// <param name="secret">The secret to use</param>
+        public static XXHash3 Create(ReadOnlySpan<byte> secret)
+        {
+            Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
+
+            XXHash3 state = new();
+            state.Reset(0, secret);
+            return state;
+        }
+
+        /// <summary>
+        /// Creates a new <see cref="XXHash3"/> instance using the provided seed and secret
+        /// </summary>
+        /// <param name="seed">The seed to use</param>
+        /// <param name="secret">The secret to use</param>
+        public static XXHash3 Create(ulong seed, ReadOnlySpan<byte> secret)
+        {
+            Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
+
+            XXHash3 state = new();
+            state.Reset(seed, secret);
+            // seed can be 0
+            state._useSeed = true;
+
+            return state;
+        }
+
+        /// <summary>
+        /// Computes a checksum by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
+        public ulong HashData64(Stream stream)
+        {
+            Guard.IsNotNull(stream, nameof(stream));
+
+            int bytesRead;
+            while ((bytesRead = stream.Read(this._streamBuffer, 0, this._streamBuffer.Length)) > 0)
             {
-                return xxh3_129to240_64(data, length, secret, secretLength, seed);
+                Update(this._streamBuffer.AsSpan()[..bytesRead]);
+            }
+
+            return Digest64();
+        }
+        #endregion
+
+        #region Public Immediate API
+        /// <summary>
+        /// Computes a 64-bit hash using the default secret and seed
+        /// </summary>
+        /// <param name="data">The data to hash</param>
+        public static ulong Hash64(ReadOnlySpan<byte> data) => Hash64(data, XXH3_SECRET, 0);
+
+        /// <summary>
+        /// Computes a 64-bit hash using the default secret and the provided seed
+        /// </summary>
+        /// <param name="data">The data to hash</param>
+        /// <param name="seed">The seed to use</param>
+        public static ulong Hash64(ReadOnlySpan<byte> data, ulong seed) =>
+            Hash64(data, XXH3_SECRET, seed);
+
+        /// <summary>
+        /// Computes a 64-bit hash using the provided secret and the default seed
+        /// </summary>
+        /// <param name="data">The data to hash</param>
+        /// <param name="secret">The secret to use</param>
+        public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret) =>
+            Hash64(data, secret, 0);
+
+        /// <summary>
+        /// Computes a 64-bit hash using the provided secret and seed
+        /// </summary>
+        /// <param name="data">The data to hash</param>
+        /// <param name="secret">The secret to use</param>
+        /// <param name="seed">The seed to use</param>
+        public static ulong Hash64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret, ulong seed)
+        {
+            Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
+
+            if (data.Length <= 16)
+            {
+                return xxh3_0to16_64(data, secret, seed);
+            }
+            else if (data.Length <= 128)
+            {
+                return xxh3_17to128_64(data, secret, seed);
+            }
+            else if (data.Length <= XXH3_MIDSIZE_MAX)
+            {
+                return xxh3_129to240_64(data, secret, seed);
             }
             else
             {
-                return xxh3_hashLong_64(data, length, secret, secretLength, seed);
+                return xxh3_hashLong_64(data, secret);
             }
         }
+        #endregion
 
-        private static ulong xxh3_0to16_64(ReadOnlySpan<byte> data, int length, ReadOnlySpan<byte> secret, ulong seed)
+        #region Immediate Stream Public API
+        /// <summary>
+        /// Computes a checksum using the default seed and secret
+        /// by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
+        public static ulong Hash64(Stream stream)
         {
-            if (length > 8) return xxh3_len_9to16_64(data, length, secret, seed);
-            else if (length >= 4) return xxh3_len_4to8_64(data, length, secret, seed);
-            else if (length > 0) return xxh3_len_1to3_64(data, length, secret, seed);
-            else return xxh3_avalanche(seed ^ (read_le64(secret[56..]) ^ read_le64(secret[64..])));
+            using XXHash3 state = Create();
+            return state.HashData64(stream);
+        }
 
+        /// <summary>
+        /// Computes a checksum using the provided seed and the default secret
+        /// by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
+        /// <param name="seed">The seed to use</param>
+        public static ulong Hash64(Stream stream, ulong seed)
+        {
+            using XXHash3 state = Create(seed);
+            return state.HashData64(stream);
+        }
 
-            static ulong xxh3_len_9to16_64(ReadOnlySpan<byte> data, int length, ReadOnlySpan<byte> secret, ulong seed)
+        /// <summary>
+        /// Computes a checksum using the default seed and the provided secret
+        /// by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
+        /// <param name="secret">The secret to use</param>
+        public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret)
+        {
+            using XXHash3 state = Create(secret);
+            return state.HashData64(stream);
+        }
+
+        /// <summary>
+        /// Computes a checksum using the provided seed and secret
+        /// by reading data from <paramref name="stream"/> until the end
+        /// </summary>
+        /// <param name="stream">The stream to read from</param>
+        /// <param name="secret">The secret to use</param>
+        /// <param name="seed">The seed to use</param>
+        public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret, ulong seed)
+        {
+            using XXHash3 state = Create(seed, secret);
+            return state.HashData64(stream);
+        }
+        #endregion
+
+        #region XXHash3 Internal routines
+        #region XXHash3 Internal Immediate routines
+        private static ulong xxh3_0to16_64(
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret,
+            ulong seed
+        )
+        {
+            if (data.Length > 8)
+                return xxh3_len_9to16_64(data, secret, seed);
+            else if (data.Length >= 4)
+                return xxh3_len_4to8_64(data, secret, seed);
+            else if (data.Length > 0)
+                return xxh3_len_1to3_64(data, secret, seed);
+            else
+                return xxh3_avalanche(
+                    seed ^ (XXHash.Read64Le(secret[56..]) ^ XXHash.Read64Le(secret[64..]))
+                );
+
+            static ulong xxh3_len_9to16_64(
+                ReadOnlySpan<byte> data,
+                ReadOnlySpan<byte> secret,
+                ulong seed
+            )
             {
-                ulong bitflip1 = (read_le64(secret[24..]) ^ read_le64(secret[32..])) + seed;
-                ulong bitflip2 = (read_le64(secret[40..]) ^ read_le64(secret[48..])) - seed;
-                ulong input_low = read_le64(data) ^ bitflip1;
-                ulong input_high = read_le64(data[(length - 8)..]) ^ bitflip2;
-                ulong acc = (ulong)length + swap64(input_low) + input_high + xxh3_mul128_fold64(input_low, input_high);
+                ulong bitflip1 =
+                    (XXHash.Read64Le(secret[24..]) ^ XXHash.Read64Le(secret[32..])) + seed;
+                ulong bitflip2 =
+                    (XXHash.Read64Le(secret[40..]) ^ XXHash.Read64Le(secret[48..])) - seed;
+                ulong input_low = XXHash.Read64Le(data) ^ bitflip1;
+                ulong input_high = XXHash.Read64Le(data[(data.Length - 8)..]) ^ bitflip2;
+                ulong acc =
+                    (ulong)data.Length
+                    + Swap64(input_low)
+                    + input_high
+                    + xxh3_mul128_fold64(input_low, input_high);
 
                 return xxh3_avalanche(acc);
             }
-            static ulong xxh3_len_4to8_64(ReadOnlySpan<byte> data, int length, ReadOnlySpan<byte> secret, ulong seed)
+            static ulong xxh3_len_4to8_64(
+                ReadOnlySpan<byte> data,
+                ReadOnlySpan<byte> secret,
+                ulong seed
+            )
             {
-                seed ^= (ulong)swap32((uint)seed) << 32;
+                seed ^= (ulong)Swap32((uint)seed) << 32;
 
-                uint input1 = read_le32(data);
-                uint input2 = read_le32(data[(length - 4)..]);
-                ulong bitflip = (read_le64(secret[8..]) ^ read_le64(secret[16..])) - seed;
+                uint input1 = XXHash.Read32Le(data);
+                uint input2 = XXHash.Read32Le(data[(data.Length - 4)..]);
+                ulong bitflip =
+                    (XXHash.Read64Le(secret[8..]) ^ XXHash.Read64Le(secret[16..])) - seed;
                 ulong input64 = input2 + (((ulong)input1) << 32);
                 ulong keyed = input64 ^ bitflip;
 
-                return xxh3_rrmxmx(keyed, (ulong)length);
+                return xxh3_rrmxmx(keyed, (ulong)data.Length);
             }
-            static ulong xxh3_len_1to3_64(ReadOnlySpan<byte> data, int length, ReadOnlySpan<byte> secret, ulong seed)
+            static ulong xxh3_len_1to3_64(
+                ReadOnlySpan<byte> data,
+                ReadOnlySpan<byte> secret,
+                ulong seed
+            )
             {
                 byte c1 = data[0];
-                byte c2 = data[length >> 1];
-                byte c3 = data[length - 1];
-                uint combined = ((uint)c1 << 16) | ((uint)c2 << 24) | ((uint)c3 << 0) | ((uint)length << 8);
-                ulong bitflip = (read_le32(secret) ^ read_le32(secret[4..])) + seed;
+                byte c2 = data[data.Length >> 1];
+                byte c3 = data[data.Length - 1];
+                uint combined =
+                    ((uint)c1 << 16)
+                    | ((uint)c2 << 24)
+                    | ((uint)c3 << 0)
+                    | ((uint)data.Length << 8);
+                ulong bitflip = (XXHash.Read32Le(secret) ^ XXHash.Read32Le(secret[4..])) + seed;
                 ulong keyed = (ulong)combined ^ bitflip;
 
                 return xxh64_avalanche(keyed);
             }
         }
-        private static ulong xxh3_17to128_64(ReadOnlySpan<byte> data, int length, ReadOnlySpan<byte> secret, int secretLength, ulong seed)
+
+        private static ulong xxh3_17to128_64(
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret,
+            ulong seed
+        )
         {
-            ulong acc = (ulong)length * XXH_PRIME64_1;
-
-            if (length > 32)
-            {
-                if (length > 64)
-                {
-                    if (length > 96)
-                    {
-                        acc += xxh3_mix16B(data[48..], secret[96..], seed);
-                        acc += xxh3_mix16B(data[(length - 64)..], secret[112..], seed);
-                    }
-
-                    acc += xxh3_mix16B(data[32..], secret[64..], seed);
-                    acc += xxh3_mix16B(data[(length - 48)..], secret[80..], seed);
-                }
-
-                acc += xxh3_mix16B(data[16..], secret[32..], seed);
-                acc += xxh3_mix16B(data[(length - 32)..], secret[48..], seed);
-            }
+            ulong acc = (ulong)data.Length * XXHash.XXH_PRIME64_1;
+            ulong accEnd = 0;
 
             acc += xxh3_mix16B(data, secret, seed);
-            acc += xxh3_mix16B(data[(length - 16)..], secret[16..], seed);
+            accEnd += xxh3_mix16B(data[(data.Length - 16)..], secret[16..], seed);
+            if (data.Length > 32)
+            {
+                acc += xxh3_mix16B(data[16..], secret[32..], seed);
+                accEnd += xxh3_mix16B(data[(data.Length - 32)..], secret[48..], seed);
 
-            return xxh3_avalanche(acc);
+                if (data.Length > 64)
+                {
+                    acc += xxh3_mix16B(data[32..], secret[64..], seed);
+                    accEnd += xxh3_mix16B(data[(data.Length - 48)..], secret[80..], seed);
+
+                    if (data.Length > 96)
+                    {
+                        acc += xxh3_mix16B(data[48..], secret[96..], seed);
+                        accEnd += xxh3_mix16B(data[(data.Length - 64)..], secret[112..], seed);
+                    }
+                }
+            }
+
+            return xxh3_avalanche(acc + accEnd);
         }
-        private static ulong xxh3_129to240_64(ReadOnlySpan<byte> data, int length, ReadOnlySpan<byte> secret, int secretLength, ulong seed)
-        {
-            ulong acc = (ulong)length * XXH_PRIME64_1;
 
-            int round_count = length / 16;
+        private static ulong xxh3_129to240_64(
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret,
+            ulong seed
+        )
+        {
+            ulong acc = (ulong)data.Length * XXHash.XXH_PRIME64_1;
+
+            int round_count = data.Length / 16;
             for (int i = 0; i < 8; i++)
             {
                 acc += xxh3_mix16B(data[(16 * i)..], secret[(16 * i)..], seed);
@@ -155,39 +376,368 @@ namespace XXHash3NET
                 acc += xxh3_mix16B(data[(16 * i)..], secret[((16 * (i - 8)) + 3)..], seed);
             }
 
-            acc += xxh3_mix16B(data[(length - 16)..], secret[(136 - 17)..], seed);
+            acc += xxh3_mix16B(data[(data.Length - 16)..], secret[(136 - 17)..], seed);
 
             return xxh3_avalanche(acc);
         }
 
-        private static ulong xxh3_hashLong_64(ReadOnlySpan<byte> data, int length, ReadOnlySpan<byte> secret, int secretLength, ulong seed)
+        private static ulong xxh3_hashLong_64(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret)
         {
             ulong[] acc = new ulong[8]
             {
-                XXH_PRIME32_3, XXH_PRIME64_1, XXH_PRIME64_2, XXH_PRIME64_3,
-                XXH_PRIME64_4, XXH_PRIME32_2, XXH_PRIME64_5, XXH_PRIME32_1
+                XXHash.XXH_PRIME32_3,
+                XXHash.XXH_PRIME64_1,
+                XXHash.XXH_PRIME64_2,
+                XXHash.XXH_PRIME64_3,
+                XXHash.XXH_PRIME64_4,
+                XXHash.XXH_PRIME32_2,
+                XXHash.XXH_PRIME64_5,
+                XXHash.XXH_PRIME32_1
             };
 
-            int stripesPerBlock = (secretLength - XXH_STRIPE_LEN) / 8;
-            int blockLength = XXH_STRIPE_LEN * stripesPerBlock;
-            int blockCount = (length - 1) / blockLength;
+            int stripesPerBlock = (secret.Length - XXHash.XXH_STRIPE_LEN) / 8;
+            int blockLength = XXHash.XXH_STRIPE_LEN * stripesPerBlock;
+            int blockCount = (data.Length - 1) / blockLength;
 
             for (int n = 0; n < blockCount; n++)
             {
                 xxh3_accumulate(acc, data[(n * blockLength)..], secret, stripesPerBlock);
-                xxh3_scramble_acc_scalar(acc, secret[(secretLength - XXH_STRIPE_LEN)..]);
+                xxh3_scramble_acc_scalar(acc, secret[(secret.Length - XXHash.XXH_STRIPE_LEN)..]);
             }
 
-            int stripeCount = ((length - 1) - (blockLength * blockCount)) / XXH_STRIPE_LEN;
+            int stripeCount =
+                ((data.Length - 1) - (blockLength * blockCount)) / XXHash.XXH_STRIPE_LEN;
             xxh3_accumulate(acc, data[(blockCount * blockLength)..], secret, stripeCount);
 
-            ReadOnlySpan<byte> p = data[(length - XXH_STRIPE_LEN)..];
-            xxh3_accumulate_512_scalar(acc, p, secret[(secretLength - XXH_STRIPE_LEN - 7)..]);
+            ReadOnlySpan<byte> p = data[(data.Length - XXHash.XXH_STRIPE_LEN)..];
+            xxh3_accumulate_512_scalar(
+                acc,
+                p,
+                secret[(secret.Length - XXHash.XXH_STRIPE_LEN - 7)..]
+            );
 
-            return xxh3_merge_accs(acc, secret[11..], (ulong)length * XXH_PRIME64_1);
+            return xxh3_merge_accs(
+                acc,
+                secret[XXH_SECRET_MERGEACCS_START..],
+                (ulong)data.Length * XXHash.XXH_PRIME64_1
+            );
+        }
+        #endregion
+
+        #region XXHash3 Internal Streaming routines
+        private void Reset(ulong seed, ReadOnlySpan<byte> secret)
+        {
+            this._bufferedSize = 0;
+            this._useSeed = false;
+            this._currentStripeCount = 0;
+            this._totalLength = 0;
+            this._stripeCountPerBlock = 0;
+            this._secretLimit = 0;
+            this._seed = 0;
+            this._reserved64 = 0;
+            this._externalSecret = null;
+
+            this._accumulator = new ulong[8]
+            {
+                XXHash.XXH_PRIME32_3,
+                XXHash.XXH_PRIME64_1,
+                XXHash.XXH_PRIME64_2,
+                XXHash.XXH_PRIME64_3,
+                XXHash.XXH_PRIME64_4,
+                XXHash.XXH_PRIME32_2,
+                XXHash.XXH_PRIME64_5,
+                XXHash.XXH_PRIME32_1
+            };
+
+            this._seed = seed;
+            this._useSeed = seed != 0;
+
+            Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
+            this._externalSecret = new byte[secret.Length];
+            secret.CopyTo(this._externalSecret);
+
+            this._secretLimit = secret.Length - XXHash.XXH_STRIPE_LEN;
+            this._stripeCountPerBlock = this._secretLimit / XXHash.XXH_SECRET_CONSUME_RATE;
         }
 
-        private static ulong xxh3_merge_accs(Span<ulong> acc, ReadOnlySpan<byte> secret, ulong start)
+        private void InitializeCustomSecretScalar(ulong seed)
+        {
+            for (int i = 0; i < XXH3_SECRET.Length / 16; i++)
+            {
+                ulong low = XXHash.Read64Le(this._customSecret.AsSpan()[(i * 16)..]) + seed;
+                ulong high = XXHash.Read64Le(this._customSecret.AsSpan()[(i * 16 + 8)..]) - seed;
+
+                XXHash.Write64Le(this._customSecret.AsSpan()[(i * 16)..], low);
+                XXHash.Write64Le(this._customSecret.AsSpan()[(i * 16 + 8)..], high);
+            }
+        }
+
+        // https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5446
+        private static void ConsumeStripes(
+            Span<ulong> accumulator,
+            ref int currentStripeCount,
+            int stripeCountPerBlock,
+            ReadOnlySpan<byte> input,
+            int stripeCount,
+            ReadOnlySpan<byte> secret,
+            int secretLimit
+        )
+        {
+            Debug.Assert(stripeCount <= stripeCountPerBlock);
+            Debug.Assert(currentStripeCount < stripeCountPerBlock);
+
+            if (stripeCountPerBlock - currentStripeCount <= stripeCount)
+            {
+                int stripeCountUntilEndOfBlock = stripeCountPerBlock - currentStripeCount;
+                int stripeCountAfterBlock = stripeCount - stripeCountUntilEndOfBlock;
+
+                xxh3_accumulate(
+                    accumulator,
+                    input,
+                    secret[(currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
+                    stripeCountUntilEndOfBlock
+                );
+                xxh3_scramble_acc(accumulator, secret[secretLimit..]);
+                xxh3_accumulate(
+                    accumulator,
+                    input[(stripeCountUntilEndOfBlock * XXHash.XXH_STRIPE_LEN)..],
+                    secret,
+                    stripeCountAfterBlock
+                );
+
+                currentStripeCount = stripeCountAfterBlock;
+            }
+            else
+            {
+                xxh3_accumulate(
+                    accumulator,
+                    input,
+                    secret[(currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
+                    stripeCount
+                );
+
+                currentStripeCount += stripeCount;
+            }
+        }
+
+        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5478
+        private void Update(ReadOnlySpan<byte> data)
+        {
+            // If input is empty, return early
+            if (data.IsEmpty)
+            {
+                return;
+            }
+
+            // Choose secret
+            ReadOnlySpan<byte> secret = this._externalSecret is null
+                ? this._customSecret
+                : this._externalSecret;
+
+            this._totalLength += data.Length;
+            Debug.Assert(this._bufferedSize <= XXH3_INTERNALBUFFER_SIZE);
+
+            // small input
+            if (this._bufferedSize + data.Length <= XXH3_INTERNALBUFFER_SIZE)
+            {
+                data.CopyTo(this._buffer.AsSpan(this._bufferedSize));
+                this._bufferedSize += data.Length;
+                return;
+            }
+
+            int internalBufferStripeCount = XXH3_INTERNALBUFFER_SIZE / XXHash.XXH_STRIPE_LEN;
+            int dataOffset = 0;
+            if (this._bufferedSize != 0)
+            {
+                int loadSize = XXH3_INTERNALBUFFER_SIZE - this._bufferedSize;
+
+                data[dataOffset..(dataOffset + loadSize)].CopyTo(
+                    this._buffer.AsSpan(this._bufferedSize)
+                );
+                dataOffset += loadSize;
+
+                ConsumeStripes(
+                    this._accumulator,
+                    ref this._currentStripeCount,
+                    this._stripeCountPerBlock,
+                    this._buffer,
+                    internalBufferStripeCount,
+                    secret,
+                    this._secretLimit
+                );
+
+                this._bufferedSize = 0;
+            }
+
+            Debug.Assert(dataOffset < data.Length);
+
+            // large input
+            if (data.Length - dataOffset > this._stripeCountPerBlock * XXHash.XXH_STRIPE_LEN)
+            {
+                int stripeCount = (data.Length - 1 - dataOffset) / XXHash.XXH_STRIPE_LEN;
+                Debug.Assert(this._stripeCountPerBlock >= this._currentStripeCount);
+
+                // join to current block's end
+                {
+                    int stripeCountUntilEnd = this._stripeCountPerBlock - this._currentStripeCount;
+                    Debug.Assert(stripeCountUntilEnd <= stripeCount);
+
+                    xxh3_accumulate(
+                        this._accumulator,
+                        data[dataOffset..],
+                        secret[(this._currentStripeCount * XXHash.XXH_SECRET_CONSUME_RATE)..],
+                        stripeCountUntilEnd
+                    );
+                    xxh3_scramble_acc(this._accumulator, secret[this._secretLimit..]);
+
+                    this._currentStripeCount = 0;
+                    dataOffset += stripeCountUntilEnd * XXHash.XXH_STRIPE_LEN;
+                    stripeCount -= stripeCountUntilEnd;
+                }
+
+                // consume per entire blocks
+                while (stripeCount >= this._stripeCountPerBlock)
+                {
+                    xxh3_accumulate(
+                        this._accumulator,
+                        data[dataOffset..],
+                        secret,
+                        this._stripeCountPerBlock
+                    );
+                    xxh3_scramble_acc(this._accumulator, secret[this._secretLimit..]);
+
+                    dataOffset += this._stripeCountPerBlock * XXHash.XXH_STRIPE_LEN;
+                    stripeCount -= this._stripeCountPerBlock;
+                }
+
+                // consume last partial block
+                {
+                    xxh3_accumulate(this._accumulator, data[dataOffset..], secret, stripeCount);
+
+                    dataOffset += stripeCount * XXHash.XXH_STRIPE_LEN;
+                    Debug.Assert(dataOffset < data.Length);
+
+                    this._currentStripeCount = stripeCount;
+
+                    data.Slice(dataOffset - XXHash.XXH_STRIPE_LEN, XXHash.XXH_STRIPE_LEN)
+                        .CopyTo(this._buffer.AsSpan()[^XXHash.XXH_STRIPE_LEN..]);
+
+                    Debug.Assert(data.Length - dataOffset <= XXHash.XXH_STRIPE_LEN);
+                }
+            }
+            else
+            {
+                // content to consume <= block size
+                // Consume input by a multiple of internal buffer size
+                if (data.Length - dataOffset > XXH3_INTERNALBUFFER_SIZE)
+                {
+                    int limit = data.Length - XXH3_INTERNALBUFFER_SIZE;
+                    do
+                    {
+                        ConsumeStripes(
+                            this._accumulator,
+                            ref this._currentStripeCount,
+                            this._stripeCountPerBlock,
+                            data[dataOffset..],
+                            internalBufferStripeCount,
+                            secret,
+                            this._secretLimit
+                        );
+
+                        dataOffset += XXH3_INTERNALBUFFER_SIZE;
+                    } while (dataOffset < limit);
+
+                    data.Slice(dataOffset - XXHash.XXH_STRIPE_LEN, XXHash.XXH_STRIPE_LEN)
+                        .CopyTo(this._buffer.AsSpan()[^XXHash.XXH_STRIPE_LEN..]);
+                }
+            }
+
+            Debug.Assert(dataOffset < data.Length);
+            Debug.Assert(data.Length - dataOffset <= XXH3_INTERNALBUFFER_SIZE);
+            Debug.Assert(this._bufferedSize == 0);
+
+            data[dataOffset..].CopyTo(this._buffer);
+            this._bufferedSize = data.Length - dataOffset;
+        }
+
+        private ulong Digest64()
+        {
+            ReadOnlySpan<byte> secret = this._externalSecret is null
+                ? this._customSecret
+                : this._externalSecret;
+            if (this._totalLength > XXH3_MIDSIZE_MAX)
+            {
+                Span<ulong> accumulator = stackalloc ulong[XXH_ACC_NB];
+                accumulator.Clear();
+
+                DigestLong(accumulator, secret);
+                return xxh3_merge_accs(
+                    accumulator,
+                    secret[XXH_SECRET_MERGEACCS_START..],
+                    (ulong)this._totalLength * XXHash.XXH_PRIME64_1
+                );
+            }
+
+            return this._useSeed switch
+            {
+                true => Hash64(this._buffer.AsSpan(0, this._totalLength), this._seed),
+                false => Hash64(this._buffer.AsSpan(0, this._totalLength), secret)
+            };
+        }
+
+        //https://github.com/Cyan4973/xxHash/blob/dev/xxhash.h#L5602
+        private void DigestLong(Span<ulong> accumulator, ReadOnlySpan<byte> secret)
+        {
+            this._accumulator.CopyTo(accumulator);
+
+            if (this._bufferedSize >= XXHash.XXH_STRIPE_LEN)
+            {
+                int stripeCount = (this._bufferedSize - 1) / XXHash.XXH_STRIPE_LEN;
+                int currentStripeCount = this._currentStripeCount;
+
+                ConsumeStripes(
+                    accumulator,
+                    ref currentStripeCount,
+                    this._stripeCountPerBlock,
+                    this._buffer,
+                    stripeCount,
+                    secret,
+                    this._secretLimit
+                );
+
+                xxh3_accumulate_512(
+                    accumulator,
+                    this._buffer.AsSpan()[(this._bufferedSize - XXHash.XXH_STRIPE_LEN)..],
+                    secret[(this._secretLimit - XXH_SECRET_LASTACC_START)..]
+                );
+            }
+            else
+            {
+                Span<byte> lastStripe = stackalloc byte[XXHash.XXH_STRIPE_LEN];
+                lastStripe.Clear();
+
+                int catchupSize = XXHash.XXH_STRIPE_LEN - this._bufferedSize;
+
+                Debug.Assert(this._bufferedSize > 0);
+
+                this._buffer.AsSpan()[^catchupSize..].CopyTo(lastStripe);
+                this._buffer.AsSpan()[..this._bufferedSize].CopyTo(lastStripe[catchupSize..]);
+
+                xxh3_accumulate_512(
+                    accumulator,
+                    lastStripe,
+                    secret[(this._secretLimit - XXH_SECRET_LASTACC_START)..]
+                );
+            }
+        }
+        #endregion
+        #endregion
+
+        private static ulong xxh3_merge_accs(
+            Span<ulong> acc,
+            ReadOnlySpan<byte> secret,
+            ulong start
+        )
         {
             ulong result = start;
 
@@ -198,12 +748,15 @@ namespace XXHash3NET
 
             return xxh3_avalanche(result);
         }
-        private static ulong xxh3_mix2accs(Span<ulong> acc, ReadOnlySpan<byte> secret)
-        {
-            return xxh3_mul128_fold64(acc[0] ^ read_le64(secret), acc[1] ^ read_le64(secret[8..]));
-        }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong xxh3_avalanche(ulong hash)
+        private static ulong xxh3_mix2accs(Span<ulong> acc, ReadOnlySpan<byte> secret) =>
+            xxh3_mul128_fold64(
+                acc[0] ^ XXHash.Read64Le(secret),
+                acc[1] ^ XXHash.Read64Le(secret[8..])
+            );
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong xxh3_avalanche(ulong hash)
         {
             hash = xxh_xorshift64(hash, 37);
             hash *= 0x165667919E3779F9UL;
@@ -211,61 +764,96 @@ namespace XXHash3NET
 
             return hash;
         }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong xxh64_avalanche(ulong hash)
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong xxh64_avalanche(ulong hash)
         {
             hash ^= hash >> 33;
-            hash *= XXH_PRIME64_2;
+            hash *= XXHash.XXH_PRIME64_2;
             hash ^= hash >> 29;
-            hash *= XXH_PRIME64_3;
+            hash *= XXHash.XXH_PRIME64_3;
             hash ^= hash >> 32;
 
             return hash;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong xxh3_rrmxmx(ulong h64, ulong len)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong xxh3_rrmxmx(ulong h64, ulong len)
         {
-            h64 ^= rotl64(h64, 49) ^ rotl64(h64, 24);
+            h64 ^= RotLeft64(h64, 49) ^ RotLeft64(h64, 24);
             h64 *= 0x9FB21C651E98DF25UL;
             h64 ^= (h64 >> 35) + len;
             h64 *= 0x9FB21C651E98DF25UL;
 
             return xxh_xorshift64(h64, 28);
         }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong xxh3_mix16B(ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret, ulong seed)
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong xxh3_mix16B(
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret,
+            ulong seed
+        )
         {
-            ulong input_low = read_le64(data);
-            ulong input_high = read_le64(data[8..]);
+            ulong input_low = XXHash.Read64Le(data);
+            ulong input_high = XXHash.Read64Le(data[8..]);
 
             return xxh3_mul128_fold64(
-                input_low ^ (read_le64(secret) + seed),
-                input_high ^ (read_le64(secret[8..]) - seed));
+                input_low ^ (XXHash.Read64Le(secret) + seed),
+                input_high ^ (XXHash.Read64Le(secret[8..]) - seed)
+            );
         }
 
-        private static unsafe void xxh3_accumulate(ulong[] acc, ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret, int stripeCount)
+        #region XXHash3 Accumulate
+        private static unsafe void xxh3_accumulate(
+            Span<ulong> acc,
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret,
+            int stripeCount
+        )
         {
             for (int i = 0; i < stripeCount; i++)
             {
-                xxh3_accumulate_512_scalar(acc, data[(i * XXH_STRIPE_LEN)..], secret[(i * 8)..]);
+                xxh3_accumulate_512(acc, data[(i * XXHash.XXH_STRIPE_LEN)..], secret[(i * 8)..]);
             }
         }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static void xxh3_accumulate_512_scalar(ulong[] acc, ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret)
+
+        // TODO: Implement SSE2/AVX2
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void xxh3_accumulate_512(
+            Span<ulong> acc,
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret
+        ) => xxh3_accumulate_512_scalar(acc, data, secret);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void xxh3_accumulate_512_scalar(
+            Span<ulong> acc,
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret
+        )
         {
             for (int i = 0; i < XXH_ACC_NB; i++)
             {
-                ulong data_val = read_le64(data[(8 * i)..]);
-                ulong data_key = data_val ^ read_le64(secret[(i * 8)..]);
+                ulong data_val = XXHash.Read64Le(data[(8 * i)..]);
+                ulong data_key = data_val ^ XXHash.Read64Le(secret[(i * 8)..]);
 
                 acc[i ^ 1] += data_val;
                 acc[i] += xxh_mul32to64(data_key & 0xFFFFFFFF, data_key >> 32);
             }
         }
-        private static unsafe void xxh3_accumulate_512_sse2(ulong[] acc, ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret)
+
+        private static unsafe void xxh3_accumulate_512_sse2(
+            ulong[] acc,
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret
+        )
         {
             //Span<Vector128<uint>> xacc = MemoryMarshal.Cast<ulong, Vector128<uint>>(acc);
             //ReadOnlySpan<Vector128<uint>> xdata = MemoryMarshal.Cast<byte, Vector128<uint>>(data);
             //ReadOnlySpan<Vector128<uint>> xsecret = MemoryMarshal.Cast<byte, Vector128<uint>>(secret);
             //
-            //for (int i = 0; i < XXH_STRIPE_LEN / 16; i++)
+            //for (int i = 0; i < XXHash.XXH_STRIPE_LEN / 16; i++)
             //{
             //    Vector128<uint> data_vec = xdata[i];
             //    Vector128<uint> key_vec = xsecret[i];
@@ -280,39 +868,65 @@ namespace XXHash3NET
             //    xacc[i] = Sse2.Add(product, sum);
             //}
         }
-        private static void xxh3_accumulate_512_avx2(ulong[] acc, ReadOnlySpan<byte> data, ReadOnlySpan<byte> secret)
-        {
 
-        }
+        private static void xxh3_accumulate_512_avx2(
+            ulong[] acc,
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> secret
+        ) { }
+        #endregion
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static void xxh3_scramble_acc_scalar(ulong[] acc, ReadOnlySpan<byte> secret)
+        #region XXHash3 Scramble Acc
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void xxh3_scramble_acc(
+            Span<ulong> accumulator,
+            ReadOnlySpan<byte> secret
+        ) => xxh3_scramble_acc_scalar(accumulator, secret);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void xxh3_scramble_acc_scalar(
+            Span<ulong> accumulator,
+            ReadOnlySpan<byte> secret
+        )
         {
             for (int i = 0; i < XXH_ACC_NB; i++)
             {
-                ulong key64 = read_le64(secret[(8 * i)..]);
-                ulong acc64 = acc[i];
-
-                acc64 = xxh_xorshift64(acc64, 47);
-                acc64 ^= key64;
-                acc64 *= XXH_PRIME32_1;
-
-                acc[i] = acc64;
+                xxh3_scramble_acc_scalar_round(accumulator, secret, i);
             }
         }
-        private static void xxh3_scramble_acc_sse2(ulong[] acc, ReadOnlySpan<byte> secret)
-        {
 
-        }
-        private static void xxh3_scramble_acc_avx2(ulong[] acc, ReadOnlySpan<byte> secret)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void xxh3_scramble_acc_scalar_round(
+            Span<ulong> accumulator,
+            ReadOnlySpan<byte> secret,
+            int lane
+        )
         {
+            Debug.Assert(lane < XXH_ACC_NB);
 
+            ulong key64 = XXHash.Read64Le(secret[(8 * lane)..]);
+            ulong acc64 = accumulator[lane];
+
+            acc64 = xxh_xorshift64(acc64, 47);
+            acc64 ^= key64;
+            acc64 *= XXHash.XXH_PRIME32_1;
+
+            accumulator[lane] = acc64;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong xxh_xorshift64(ulong v64, int shift)
-        {
-            return v64 ^ (v64 >> shift);
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static unsafe ulong xxh3_mul128_fold64(ulong lhs, ulong rhs)
+        // TODO
+        private static void xxh3_scramble_acc_sse2(ulong[] acc, ReadOnlySpan<byte> secret) { }
+
+        // TODO
+        private static void xxh3_scramble_acc_avx2(ulong[] acc, ReadOnlySpan<byte> secret) { }
+        #endregion
+
+        #region XXHash3 bit twiddling utilities
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong xxh_xorshift64(ulong v64, int shift) => v64 ^ (v64 >> shift);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static unsafe ulong xxh3_mul128_fold64(ulong lhs, ulong rhs)
         {
 #if NETCOREAPP
             ulong low;
@@ -323,7 +937,9 @@ namespace XXHash3NET
             return xxh3_mul128_fold64_slow(rhs, lhs);
 #endif
         }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static unsafe ulong xxh3_mul128_fold64_slow(ulong lhs, ulong rhs)
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static unsafe ulong xxh3_mul128_fold64_slow(ulong lhs, ulong rhs)
         {
             uint lhsHigh = (uint)(lhs >> 32);
             uint rhsHigh = (uint)(rhs >> 32);
@@ -344,43 +960,50 @@ namespace XXHash3NET
 
             return high + low;
         }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong xxh_mul32to64(ulong x, ulong y)
-        {
-            return (ulong)(uint)x * (ulong)(uint)y;
-        }
-
-
-        // -------------- UTILITY METHODS -------------- \\
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static uint read_le32(ReadOnlySpan<byte> data)
-        {
-            return BinaryPrimitives.ReadUInt32LittleEndian(data);
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong read_le64(ReadOnlySpan<byte> data)
-        {
-            return BinaryPrimitives.ReadUInt64LittleEndian(data);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static uint swap32(uint value)
-        {
-            return BinaryPrimitives.ReverseEndianness(value);
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong swap64(ulong value)
-        {
-            return BinaryPrimitives.ReverseEndianness(value);
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong rotl64(ulong value, int shift)
-        {
-            return (value << shift) | (value >> (64 - shift));
-        }
-        [MethodImpl(MethodImplOptions.AggressiveInlining)] private static ulong rotr64(ulong value, int shift)
-        {
-            return (value << (64 - shift)) | (value >> shift);
-        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static byte _mm_shuffle(byte p3, byte p2, byte p1, byte p0)
+        private static ulong xxh_mul32to64(ulong x, ulong y) => (x & 0xFFFFFFFF) * (y & 0xFFFFFFFF);
+        #endregion
+
+        #region Common bit twiddling utilities
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static uint Swap32(uint value) => BinaryPrimitives.ReverseEndianness(value);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong Swap64(ulong value) => BinaryPrimitives.ReverseEndianness(value);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong RotLeft64(ulong value, int shift) =>
+            (value << shift) | (value >> (64 - shift));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong RotRight64(ulong value, int shift) =>
+            (value << (64 - shift)) | (value >> shift);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static byte _mm_shuffle(byte p3, byte p2, byte p1, byte p0) =>
+            (byte)((p3 << 6) | (p2 << 4) | (p1 << 2) | p0);
+        #endregion
+
+        #region Dispose
+        private void Dispose(bool disposing)
         {
-            return (byte)((p3 << 6) | (p2 << 4) | (p1 << 2) | p0);
+            if (this._isDisposed is false)
+            {
+                if (disposing)
+                {
+                    ArrayPool<byte>.Shared.Return(this._streamBuffer);
+                }
+
+                this._isDisposed = true;
+            }
         }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        #endregion
     }
 }
