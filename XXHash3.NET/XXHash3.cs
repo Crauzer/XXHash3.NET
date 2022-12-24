@@ -821,10 +821,10 @@ namespace XXHash3NET
 
         #region XXHash3 Scramble Acc
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void xxh3_scramble_acc(Span<ulong> accumulator, ReadOnlySpan<byte> secret)
-        {
-            xxh3_scramble_acc_scalar(accumulator, secret);
-        }
+        internal static void xxh3_scramble_acc(
+            Span<ulong> accumulator,
+            ReadOnlySpan<byte> secret
+        ) => xxh3_scramble_acc_scalar(accumulator, secret);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static void xxh3_scramble_acc_scalar(
