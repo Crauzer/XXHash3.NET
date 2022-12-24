@@ -1,6 +1,6 @@
-﻿using System.Buffers.Binary;
+﻿using System;
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
-using System;
 
 namespace XXHash3NET
 {
@@ -23,19 +23,19 @@ namespace XXHash3NET
 
         // -------------- UTILITY METHODS -------------- \\
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static uint Read32Le(ReadOnlySpan<byte> data) =>
-            BinaryPrimitives.ReadUInt32LittleEndian(data);
+        internal static uint Read32Le(ReadOnlySpan<byte> source) =>
+            BinaryPrimitives.ReadUInt32LittleEndian(source);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static ulong Read64Le(ReadOnlySpan<byte> data) =>
-            BinaryPrimitives.ReadUInt64LittleEndian(data);
+        internal static ulong Read64Le(ReadOnlySpan<byte> source) =>
+            BinaryPrimitives.ReadUInt64LittleEndian(source);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void Write32Le(Span<byte> data, uint value) =>
-            BinaryPrimitives.WriteUInt32LittleEndian(data, value);
+        internal static void Write32Le(Span<byte> destination, uint value) =>
+            BinaryPrimitives.WriteUInt32LittleEndian(destination, value);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static void Write64Le(Span<byte> data, ulong value) =>
-            BinaryPrimitives.WriteUInt64LittleEndian(data, value);
+        internal static void Write64Le(Span<byte> destination, ulong value) =>
+            BinaryPrimitives.WriteUInt64LittleEndian(destination, value);
     }
 }
