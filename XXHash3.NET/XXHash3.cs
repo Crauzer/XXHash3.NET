@@ -87,7 +87,11 @@ namespace XXHash3NET
 
         public static XXHash3 Create(ReadOnlySpan<byte> secret)
         {
-            Guard.IsGreaterThanOrEqualTo(secret.Length, XXH3_SECRET_SIZE_MIN, nameof(secret.Length));
+            Guard.IsGreaterThanOrEqualTo(
+                secret.Length,
+                XXH3_SECRET_SIZE_MIN,
+                nameof(secret.Length)
+            );
 
             XXHash3 state = new();
             state.Reset(0, secret);
@@ -96,7 +100,11 @@ namespace XXHash3NET
 
         public static XXHash3 Create(ulong seed, ReadOnlySpan<byte> secret)
         {
-            Guard.IsGreaterThanOrEqualTo(secret.Length, XXH3_SECRET_SIZE_MIN, nameof(secret.Length));
+            Guard.IsGreaterThanOrEqualTo(
+                secret.Length,
+                XXH3_SECRET_SIZE_MIN,
+                nameof(secret.Length)
+            );
 
             XXHash3 state = new();
             state.Reset(seed, secret);
@@ -457,23 +465,18 @@ namespace XXHash3NET
         private void Update(ReadOnlySpan<byte> data)
         {
             // If input is empty, return early
-            if(data.IsEmpty)
+            if (data.IsEmpty)
             {
                 return;
             }
 
+            // Choose secret
             ReadOnlySpan<byte> secret = this._externalSecret is null
                 ? this._customSecret
                 : this._externalSecret;
 
             this._totalLength += data.Length;
-
-            if (this._bufferedSize > XXH3_INTERNALBUFFER_SIZE)
-            {
-                ThrowHelper.ThrowInvalidOperationException(
-                    $"{nameof(this._bufferedSize)} > {nameof(XXH3_INTERNALBUFFER_SIZE)}"
-                );
-            }
+            Debug.Assert(this._bufferedSize <= XXH3_INTERNALBUFFER_SIZE);
 
             // small input
             if (this._bufferedSize + data.Length <= XXH3_INTERNALBUFFER_SIZE)
@@ -505,33 +508,18 @@ namespace XXHash3NET
                 this._bufferedSize = 0;
             }
 
-            if (dataOffset >= data.Length)
-            {
-                ThrowHelper.ThrowInvalidOperationException(
-                    $"{nameof(dataOffset)} >= {nameof(data.Length)}"
-                );
-            }
+            Debug.Assert(dataOffset < data.Length);
 
             // large input
             if (data.Length - dataOffset > this._stripeCountPerBlock * XXHash.XXH_STRIPE_LEN)
             {
                 int stripeCount = (data.Length - 1 - dataOffset) / XXHash.XXH_STRIPE_LEN;
-                if (this._stripeCountPerBlock < this._currentStripeCount)
-                {
-                    ThrowHelper.ThrowInvalidOperationException(
-                        $"{nameof(this._stripeCountPerBlock)} < {nameof(this._currentStripeCount)}"
-                    );
-                }
+                Debug.Assert(this._stripeCountPerBlock >= this._currentStripeCount);
 
                 // join to current block's end
                 {
                     int stripeCountUntilEnd = this._stripeCountPerBlock - this._currentStripeCount;
-                    if (stripeCountUntilEnd > stripeCount)
-                    {
-                        ThrowHelper.ThrowInvalidOperationException(
-                            $"{nameof(stripeCountUntilEnd)} > {nameof(stripeCount)}"
-                        );
-                    }
+                    Debug.Assert(stripeCountUntilEnd <= stripeCount);
 
                     xxh3_accumulate(
                         this._accumulator,
@@ -566,24 +554,14 @@ namespace XXHash3NET
                     xxh3_accumulate(this._accumulator, data[dataOffset..], secret, stripeCount);
 
                     dataOffset += stripeCount * XXHash.XXH_STRIPE_LEN;
-                    if (dataOffset >= data.Length)
-                    {
-                        ThrowHelper.ThrowInvalidOperationException(
-                            $"{nameof(dataOffset)} >= {nameof(data.Length)}"
-                        );
-                    }
+                    Debug.Assert(dataOffset < data.Length);
 
                     this._currentStripeCount = stripeCount;
 
                     data.Slice(dataOffset - XXHash.XXH_STRIPE_LEN, XXHash.XXH_STRIPE_LEN)
                         .CopyTo(this._buffer.AsSpan()[^XXHash.XXH_STRIPE_LEN..]);
 
-                    if (data.Length - dataOffset > XXHash.XXH_STRIPE_LEN)
-                    {
-                        ThrowHelper.ThrowInvalidOperationException(
-                            $"{nameof(data.Length)} - {nameof(dataOffset)} > {nameof(XXHash.XXH_STRIPE_LEN)}"
-                        );
-                    }
+                    Debug.Assert(data.Length - dataOffset <= XXHash.XXH_STRIPE_LEN);
                 }
             }
             else
@@ -613,22 +591,9 @@ namespace XXHash3NET
                 }
             }
 
-            if (dataOffset >= data.Length)
-            {
-                ThrowHelper.ThrowInvalidOperationException(
-                    $"{nameof(dataOffset)} >= {nameof(data.Length)}"
-                );
-            }
-            if (data.Length - dataOffset > XXHash.XXH_STRIPE_LEN)
-            {
-                ThrowHelper.ThrowInvalidOperationException(
-                    $"{nameof(data.Length)} - {nameof(dataOffset)} > {nameof(XXHash.XXH_STRIPE_LEN)}"
-                );
-            }
-            if (this._bufferedSize != 0)
-            {
-                ThrowHelper.ThrowInvalidOperationException($"{nameof(this._bufferedSize)} != 0");
-            }
+            Debug.Assert(dataOffset < data.Length);
+            Debug.Assert(data.Length - dataOffset <= XXH3_INTERNALBUFFER_SIZE);
+            Debug.Assert(this._bufferedSize == 0);
 
             data[dataOffset..].CopyTo(this._buffer);
             this._bufferedSize = data.Length - dataOffset;
