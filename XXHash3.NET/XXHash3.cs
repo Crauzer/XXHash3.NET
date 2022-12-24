@@ -87,7 +87,7 @@ namespace XXHash3NET
 
         public static XXHash3 Create(ReadOnlySpan<byte> secret)
         {
-            Guard.IsLessThanOrEqualTo(secret.Length, XXH3_SECRET.Length, nameof(secret.Length));
+            Guard.IsGreaterThanOrEqualTo(secret.Length, XXH3_SECRET_SIZE_MIN, nameof(secret.Length));
 
             XXHash3 state = new();
             state.Reset(0, secret);
@@ -96,7 +96,7 @@ namespace XXHash3NET
 
         public static XXHash3 Create(ulong seed, ReadOnlySpan<byte> secret)
         {
-            Guard.IsLessThanOrEqualTo(secret.Length, XXH3_SECRET.Length, nameof(secret.Length));
+            Guard.IsGreaterThanOrEqualTo(secret.Length, XXH3_SECRET_SIZE_MIN, nameof(secret.Length));
 
             XXHash3 state = new();
             state.Reset(seed, secret);
