@@ -41,6 +41,6 @@ jobs:
 
       - name: Build
         run: dotnet build $XXHASH3_NET_PROJECT --configuration $BUILD_CONFIG --no-restore
-
+        
       - name: Run Tests
         run: dotnet test $XXHASH3_NET_PROJECT.Tests --configuration $BUILD_CONFIG --no-restore --verbosity normal
