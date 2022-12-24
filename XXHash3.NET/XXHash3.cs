@@ -185,11 +185,7 @@ namespace XXHash3NET
         public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret) =>
             Hash64(stream, secret, 0);
 
-        public static ulong Hash64(
-            Stream stream,
-            ReadOnlySpan<byte> secret,
-            ulong seed
-        )
+        public static ulong Hash64(Stream stream, ReadOnlySpan<byte> secret, ulong seed)
         {
             using XXHash3 state = Create(seed, secret);
             return state.HashData64(stream);
@@ -696,13 +692,11 @@ namespace XXHash3NET
             return xxh3_avalanche(result);
         }
 
-        private static ulong xxh3_mix2accs(Span<ulong> acc, ReadOnlySpan<byte> secret)
-        {
-            return xxh3_mul128_fold64(
+        private static ulong xxh3_mix2accs(Span<ulong> acc, ReadOnlySpan<byte> secret) =>
+            xxh3_mul128_fold64(
                 acc[0] ^ XXHash.Read64Le(secret),
                 acc[1] ^ XXHash.Read64Le(secret[8..])
             );
-        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ulong xxh3_avalanche(ulong hash)
