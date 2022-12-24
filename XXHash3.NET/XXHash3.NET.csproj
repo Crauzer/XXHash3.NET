@@ -6,6 +6,7 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/Crauzer/XXHash3.NET</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Crauzer/XXHash3.NET</PackageProjectUrl>
+    <Description>Pure C# implementation of the XXHash3 algorithm</Description>
     <LangVersion>11</LangVersion>
     <Version>1.2.3</Version>
     <RootNamespace>XXHash3NET</RootNamespace>
