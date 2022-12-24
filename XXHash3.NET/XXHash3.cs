@@ -11,6 +11,9 @@ using System.Runtime.Intrinsics.X86;
 #endif
 namespace XXHash3NET
 {
+    /// <summary>
+    /// Represents an XXHash3 context
+    /// </summary>
     public sealed class XXHash3 : IDisposable
     {
         internal const int XXH_ACC_NB = (XXHash.XXH_STRIPE_LEN / sizeof(ulong));
