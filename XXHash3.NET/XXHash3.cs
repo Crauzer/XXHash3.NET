@@ -385,8 +385,10 @@ namespace XXHash3NET
             this._seed = seed;
             this.UseSeed = seed != 0;
 
+            Debug.Assert(secret.Length >= XXH3_SECRET_SIZE_MIN);
             this._externalSecret = new byte[secret.Length];
             secret.CopyTo(this._externalSecret);
+
             this._secretLimit = secret.Length - XXHash.XXH_STRIPE_LEN;
             this._stripeCountPerBlock = this._secretLimit / XXHash.XXH_SECRET_CONSUME_RATE;
         }
@@ -762,6 +764,7 @@ namespace XXHash3NET
             }
         }
 
+        // TODO: Implement SSE2/AVX2
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void xxh3_accumulate_512(
             Span<ulong> acc,
