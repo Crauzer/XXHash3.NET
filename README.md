@@ -1,4 +1,4 @@
-[![CI](https://github.com/Crauzer/XXHash3.NET/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Crauzer/XXHash3.NET/actions/workflows/ci.yml)
+[![CI](https://github.com/Crauzer/XXHash3.NET/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Crauzer/XXHash3.NET/actions/workflows/ci.yml) ![Nuget](https://img.shields.io/nuget/dt/XXHash3.NET)
 
 # XXHash3.NET
 
