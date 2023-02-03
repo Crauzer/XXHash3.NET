@@ -25,7 +25,6 @@
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Diagnostics" Version="8.0.0" />
-    <PackageReference Include="System.Text.Encoding.Extensions" Version="4.3.0" />
   </ItemGroup>
 
   <ItemGroup>
